@@ -4,4 +4,4 @@ This is a Vencord plugin that adds the `/fileshare` command. It allows you to up
 If you want it not to be gofile exclusive and to have the ability to upload it to different file sharers like Mediafire, Firefile.cc, etc., then please message me and let me know on Discord: `scattrdblade`
 
 ### Credits
-This is a completed and fixed version of [Samu.lol](https://github.com/144reasons)'s test plan.
+This is a completed and fixed version of [Samu.lol](https://github.com/144reasons)'s test plugin.
