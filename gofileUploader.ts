@@ -70,7 +70,8 @@ export default definePlugin({
 
                     if (uploadResult.status === "ok") {
                         const { downloadPage } = uploadResult.data;
-                        setTimeout(() => insertTextIntoChatInputBox(`${downloadPage} `), 10); // Delay insertion to ensure slash command processing is complete                        sendBotMessage(cmdCtx.channel.id, { content: `File uploaded successfully: ${downloadPage}` });
+                        setTimeout(() => insertTextIntoChatInputBox(`${downloadPage} `), 10); // Delay insertion to ensure slash command processing is complete
+                        // sendBotMessage(cmdCtx.channel.id, { content: `File uploaded successfully: ${downloadPage}` });
                     } else {
                         console.error("Error uploading file:", uploadResult);
                         sendBotMessage(cmdCtx.channel.id, { content: "Error uploading file. Check the console for more info." });
