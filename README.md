@@ -1,6 +1,6 @@
 > [!NOTE]
 > **If you run into any issues, please feel free to message me on Discord: [scattrdblade](https://discord.com/users/678007540608532491)**
-# Gofile Uploader (Vencord)
+# File Uploader (Vencord)
 This is a Vencord plugin that adds the `/fileshare` command. It allows you to upload files via the command to https://gofile.io/. After the files are uploaded, the gofile link containing the uploads is pasted into your Discord chatbox where you ran the command. This is essentially a quick way to share your files. Very convenient if your files are too big to upload on Discord.
 
 If you want it not to be gofile exclusive and to have the ability to upload it to different file sharers like Mediafire, Firefile.cc, etc., then please message me and let me know on Discord: [scattrdblade](https://discord.com/users/678007540608532491)
@@ -15,16 +15,16 @@ Inside the `Vencord` folder should be a folder called `src`. If you haven't alre
 **CLONING:**
 1. If your terminal is set to `Vencord` (if it isn't, run `cd Vencord`), clone the repository by running 
 ```js
-git clone https://github.com/ScattrdBlade/Vencord-gofileUploader
+git clone https://github.com/ScattrdBlade/Vencord-fileUploader
 ```
-2. Move the plugin folder (`Vencord-gofileUpdater`) from the `Vencord` folder into the `userplugins` folder.
-3. Ensure it's structured as `src/userplugins/Vencord-gofileUpdater`
+2. Move the plugin folder (`Vencord-fileUploader`) from the `Vencord` folder into the `userplugins` folder.
+3. Ensure it's structured as `src/userplugins/Vencord-fileUploader`
 4. Run `pnpm build` and the plugin should be added.
 
 **MANUAL DOWNLOAD**
 1. Click the green `<> Code` button at the top right of the repository and select `Download ZIP`
 2. Unzip the downloaded ZIP file into the `userplugins` folder.
-3. Ensure it's structured as `src/userplugins/Vencord-gofileUpdater` or `src/userplugins/Vencord-gofileUploader-main`
+3. Ensure it's structured as `src/userplugins/Vencord-fileUploader` or `src/userplugins/Vencord-fileUploader-main`
 5. Run `pnpm build` and the plugin should be added.
 
 ### Credits
