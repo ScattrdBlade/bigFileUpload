@@ -23,7 +23,7 @@ async function resolveFile(options: Argument[], ctx: CommandContext): Promise<Fi
 }
 
 export default definePlugin({
-    name: "GofileUploader",
+    name: "File Uploader",
     description: "Upload files to gofile.io and share links in chat using `/fileshare`.",
     authors: [
         {
