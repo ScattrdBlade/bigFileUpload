@@ -5,10 +5,11 @@
  */
 
 import { ApplicationCommandInputType, ApplicationCommandOptionType, Argument, CommandContext, sendBotMessage } from "@api/Commands";
+import { Devs } from "@utils/constants";
 import { insertTextIntoChatInputBox } from "@utils/discord";
 import definePlugin from "@utils/types";
 import { findByPropsLazy } from "@webpack";
-import { DraftType } from "@webpack/common";
+import { DraftType, UploadManager } from "@webpack/common";
 
 const UploadStore = findByPropsLazy("getUploads");
 
@@ -23,25 +24,15 @@ async function resolveFile(options: Argument[], ctx: CommandContext): Promise<Fi
 }
 
 export default definePlugin({
-    name: "File Uploader",
-    description: "Upload files to gofile.io and share links in chat using `/fileshare`.",
-    authors: [
-        {
-            name: "ScattrdBlade",
-            id: 678007540608532491n,
-        },
-        {
-            name: "samu.lol",
-            id: 702973430449832038n,
-        }
-    ],
+    name: "FileShare",
+    description: "Upload your files to gofile.io and share the link in chat via /fileshare slash command.",
+    authors: [Devs.ScattrdBlade, Devs.Samu],
     dependencies: ["CommandsAPI"],
-    target: "DESKTOP",
     commands: [
         {
             inputType: ApplicationCommandInputType.BUILT_IN,
             name: "fileshare",
-            description: "Upload a file to gofile.io and get the download link",
+            description: "Upload a file to gofile.io and get the link to share with others",
             options: [
                 {
                     name: "file",
@@ -70,14 +61,16 @@ export default definePlugin({
 
                     if (uploadResult.status === "ok") {
                         const { downloadPage } = uploadResult.data;
-                        setTimeout(() => insertTextIntoChatInputBox(`${downloadPage} `), 10); // Delay insertion to ensure slash command processing is complete
-                        // sendBotMessage(cmdCtx.channel.id, { content: `File uploaded successfully: ${downloadPage}` });
+                        UploadManager.clearAll(cmdCtx.channel.id, DraftType.SlashCommand);
+                        setTimeout(() => insertTextIntoChatInputBox(`${downloadPage} `), 10);
                     } else {
                         console.error("Error uploading file:", uploadResult);
+                        UploadManager.clearAll(cmdCtx.channel.id, DraftType.SlashCommand);
                         sendBotMessage(cmdCtx.channel.id, { content: "Error uploading file. Check the console for more info." });
                     }
                 } catch (error) {
                     console.error("Error uploading file:", error);
+                    UploadManager.clearAll(cmdCtx.channel.id, DraftType.SlashCommand);
                     sendBotMessage(cmdCtx.channel.id, { content: "Error uploading file. Check the console for more info." });
                 }
             },
