@@ -3,7 +3,7 @@
 # File Share (Vencord)
 This is a Vencord plugin that adds the `/fileshare` command. It allows you to upload files via the command to https://gofile.io/. After the files are uploaded, the gofile link containing the uploads is pasted into your Discord chatbox where you ran the command. This is essentially a quick way to share your files. Very convenient if your files are too big to upload on Discord.
 
-If you want it not to be gofile exclusive and to have the ability to upload it to different file sharers like Mediafire, Firefile.cc, etc., then please message me and let me know on Discord: [scattrdblade](https://discord.com/users/678007540608532491)
+If you need help, contact me on Discord: [scattrdblade](https://discord.com/users/678007540608532491)
 
 ## DOWNLOAD INSTRUCTIONS
 You can either __clone__ the repository OR __manually download__ it as a zip file. (DO **NOT** DO BOTH) <br/>
