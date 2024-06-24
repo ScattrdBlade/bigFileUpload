@@ -13,11 +13,15 @@ You can either __clone__ the repository OR __manually download__ it as a zip fil
 Inside the `Vencord` folder should be a folder called `src`. If you haven't already, create a folder called `userplugins` inside the `src` folder.
 
 **CLONING:**
-1. If your terminal is set to `Vencord` (if it isn't, run `cd Vencord`), clone the repository by running 
+1. Open up the terminal (command prompt/CMD) and run
+```shell
+cd Vencord/src/userplugins
+```
+then run
 ```js
 git clone https://github.com/ScattrdBlade/Vencord-fileShare
 ```
-2. Move the plugin folder (`Vencord-fileShare`) from the `Vencord` folder into the `userplugins` folder.
+2. The plugin folder (`Vencord-fileShare`) should now be in the `userplugins` folder.
 3. Ensure it's structured as `src/userplugins/Vencord-fileShare`
 4. Run `pnpm build` and the plugin should be added.
 
@@ -25,7 +29,7 @@ git clone https://github.com/ScattrdBlade/Vencord-fileShare
 1. Click the green `<> Code` button at the top right of the repository and select `Download ZIP`
 2. Unzip the downloaded ZIP file into the `userplugins` folder.
 3. Ensure it's structured as `src/userplugins/Vencord-fileShare` or `src/userplugins/Vencord-fileShare-main`
-5. Run `pnpm build` and the plugin should be added.
+5. Run `pnpm build` in the terminal (command prompt/CMD) and the plugin should be added.
 
 ### Credits
 This is a completed and fixed version of [samu.lol](https://github.com/144reasons)'s test plugin.
