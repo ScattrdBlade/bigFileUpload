@@ -12,7 +12,7 @@ You can either __clone__ the repository OR __manually install__ it by downloadin
 The cloning installation guide can be found [here](https://discord.com/channels/1015060230222131221/1257038407503446176/1257038407503446176) or via [the official Vencord Docs](https://docs.vencord.dev/installing/custom-plugins/).
 
 ### MANUAL INSTALLATION
-> [!NOTE]
+> [!IMPORTANT]
 > Inside the `Vencord` folder should be a folder called `src`. If you haven't already, create a folder called `userplugins` inside the `src` folder.
 1. Click the green `<> Code` button at the top right of the repository and select `Download ZIP`
 2. Unzip the downloaded ZIP file into the `userplugins` folder.
