@@ -1,14 +1,13 @@
-> [!NOTE]
+> [!TIP]
 > **If you run into any issues, please feel free to message me on Discord: [scattrdblade](https://discord.com/users/678007540608532491)**
 # File Share (Vencord)
 This is a Vencord plugin that adds the `/fileshare` command. It allows you to upload files via the command to https://gofile.io/. After the files are uploaded, the gofile link containing the uploads is pasted into your Discord chatbox where you ran the command. This is essentially a quick way to share your files. Very convenient if your files are too big to upload on Discord.
 
 ## DOWNLOAD INSTRUCTIONS
-You can either __clone__ the repository OR __manually download__ it as a zip file. (DO **NOT** DO BOTH) <br/>
+You can either __clone__ the repository OR __manually download__ it as a zip file.<br/>
 > [!WARNING]
-> Make sure you have the Vencord [developer build](https://github.com/Vendicated/Vencord/blob/main/docs/1_INSTALLING.md) installed.
-
-Inside the `Vencord` folder should be a folder called `src`. If you haven't already, create a folder called `userplugins` inside the `src` folder.
+> Make sure you have the Vencord [developer build](https://github.com/Vendicated/Vencord/blob/main/docs/1_INSTALLING.md) installed.<br/>
+> Inside the `Vencord` folder should be a folder called `src`. If you haven't already, create a folder called `userplugins` inside the `src` folder.
 
 **CLONING:**
 1. Open up the terminal (command prompt/CMD) and run
