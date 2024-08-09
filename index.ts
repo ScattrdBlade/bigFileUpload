@@ -49,11 +49,11 @@ export default definePlugin({
                     const formData = new FormData();
                     formData.append("file", file);
 
-                    const serverResponse = await fetch("https://api.gofile.io/getServer");
+                    const serverResponse = await fetch("https://api.gofile.io/servers");
                     const serverData = await serverResponse.json();
-                    const { server } = serverData.data;
+                    const server = serverData.data.servers[Math.floor(Math.random() * serverData.data.servers.length)].name;
 
-                    const uploadResponse = await fetch(`https://${server}.gofile.io/uploadFile`, {
+                    const uploadResponse = await fetch(`https://${server}.gofile.io/contents/uploadFile`, {
                         method: "POST",
                         body: formData,
                     });
