@@ -1,7 +1,7 @@
-> [!TIP]
-> **If you run into any issues, please feel free to message me on Discord: [scattrdblade](https://discord.com/users/678007540608532491)**
+**UPDATE: Added CatBox and LitterBox as uploader presets that can be selected in the plugin's settings. The uploader preset is set to Gofile by default.**
+
 # Big File Upload (Vencord)
-This is a Vencord plugin that allows you to bypass Discord's upload limit. It adds the `/fileupload` command and `Upload a Big File` button (located under the regular upload button). This allows you to upload files to Discord by uploading them to https://gofile.io/ and pasting the gofile link containing the upload into your Discord chatbox. This is essentially a quick way to upload big files to Discord without nitro.
+This is a Vencord plugin that allows you to bypass Discord's upload limit. It adds the `/fileupload` command and `Upload a Big File` button (located under the regular upload button). This allows you to upload files to Discord by uploading them to uploaders such as gofile.io, catbox.moe, and litterbox, and then pasting the link containing the upload into your Discord chatbox. This is essentially a quick way to upload big files to Discord without nitro.
 
 ## DOWNLOAD INSTRUCTIONS
 You can either __clone__ the repository OR __manually install__ it by downloading it as a zip file.<br/>
@@ -18,3 +18,6 @@ The cloning installation guide can be found [here](https://discord.com/channels/
 2. Unzip the downloaded ZIP file into the `userplugins` folder.
 3. Ensure it's structured as `src/userplugins/bigFileUpload` or `src/userplugins/bigFileUpload-main`
 5. Run `pnpm build` in the terminal (command prompt/CMD) and the plugin should be added.
+
+> [!TIP]
+> If you run into any issues, please feel free to message me on Discord: [scattrdblade](https://discord.com/users/678007540608532491)
