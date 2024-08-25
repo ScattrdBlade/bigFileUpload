@@ -410,7 +410,7 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                         size={Button.Sizes.XLARGE}
                         className={Margins.bottom16}
                     >
-                        Choose File
+                        Select File
                     </Button>
                     <input
                         ref={fileInputRef}
@@ -558,14 +558,22 @@ async function uploadFileToCatbox(file: File, channelId: string) {
     try {
         const url = "https://catbox.moe/user/api.php";
         const userHash = settings.store.catboxUserHash;
+        const fileSizeMB = file.size / (1024 * 1024);
 
         const arrayBuffer = await file.arrayBuffer();
         const fileName = file.name;
 
         const uploadResult = await Native.uploadFileToCatboxNative(url, arrayBuffer, fileName, file.type, userHash);
 
-        if (uploadResult.startsWith("https://")) {
-            setTimeout(() => insertTextIntoChatInputBox(`${uploadResult} `), 10);
+        if (uploadResult.startsWith("https://") || uploadResult.startsWith("http://")) {
+            const videoExtensions = [".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".wmv", ".m4v", ".mpg", ".mpeg", ".3gp", ".ogv"];
+            let finalUrl = uploadResult;
+
+            if (fileSizeMB >= 150 && videoExtensions.some(ext => finalUrl.endsWith(ext))) {
+                finalUrl = `https://embeds.video/${finalUrl}`;
+            }
+
+            setTimeout(() => insertTextIntoChatInputBox(`${finalUrl} `), 10);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         } else {
             console.error("Error uploading file:", uploadResult);
@@ -584,12 +592,20 @@ async function uploadFileToLitterbox(file: File, channelId: string) {
         const arrayBuffer = await file.arrayBuffer();
         const fileName = file.name;
         const fileType = file.type;
+        const fileSizeMB = file.size / (1024 * 1024);
         const time = settings.store.litterboxTime;
 
         const uploadResult = await Native.uploadFileToLitterboxNative(arrayBuffer, fileName, fileType, time);
 
-        if (uploadResult.startsWith("https://")) {
-            setTimeout(() => insertTextIntoChatInputBox(`${uploadResult}`), 10);
+        if (uploadResult.startsWith("https://") || uploadResult.startsWith("http://")) {
+            const videoExtensions = [".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".wmv", ".m4v", ".mpg", ".mpeg", ".3gp", ".ogv"];
+            let finalUrl = uploadResult;
+
+            if (fileSizeMB >= 150 && videoExtensions.some(ext => finalUrl.endsWith(ext))) {
+                finalUrl = `https://embeds.video/${finalUrl}`;
+            }
+
+            setTimeout(() => insertTextIntoChatInputBox(`${finalUrl}`), 10);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         } else {
             console.error("Error uploading file:", uploadResult);
@@ -617,8 +633,15 @@ async function uploadFileCustom(file: File, channelId: string) {
 
         const finalUrl = await Native.uploadFileCustomNative(settings.store.customUploaderRequestURL, arrayBuffer, fileName, fileType, fileFormName, customArgs, customHeaders, responseType, urlPath);
 
-        if (finalUrl.startsWith("https://")) {
-            setTimeout(() => insertTextIntoChatInputBox(`${finalUrl} `), 10);
+        if (finalUrl.startsWith("https://") || finalUrl.startsWith("http://")) {
+            const videoExtensions = [".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".wmv", ".m4v", ".mpg", ".mpeg", ".3gp", ".ogv"];
+            let finalUrlModified = finalUrl;
+
+            if (videoExtensions.some(ext => finalUrlModified.endsWith(ext))) {
+                finalUrlModified = `https://embeds.video/${finalUrlModified}`;
+            }
+
+            setTimeout(() => insertTextIntoChatInputBox(`${finalUrlModified} `), 10);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         } else {
             console.error("Error uploading file: Invalid URL returned");
