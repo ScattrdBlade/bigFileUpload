@@ -406,8 +406,8 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                     <Forms.FormTitle>Import ShareX Config</Forms.FormTitle>
                     <Button
                         onClick={triggerFileUpload}
-                        color={Button.Colors.PRIMARY}
-                        size={Button.Sizes.LARGE}
+                        color={Button.Colors.BRAND}
+                        size={Button.Sizes.XLARGE}
                         className={Margins.bottom16}
                     >
                         Choose File
