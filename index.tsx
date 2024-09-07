@@ -253,6 +253,23 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                 />
             </Forms.FormSection>
 
+            {/* GoFile Settings */}
+            {fileUploader === "GoFile" && (
+                <>
+                    <Forms.FormDivider />
+                    <Forms.FormTitle>GoFile Settings</Forms.FormTitle>
+                    <Forms.FormSection title="GoFile Token (optional)">
+                        <TextInput
+                            type="text"
+                            value={settings.store.gofileToken || ""}
+                            placeholder="Insert GoFile Token"
+                            onChange={newValue => updateSetting("gofileToken", newValue)}
+                            className={Margins.bottom16}
+                        />
+                    </Forms.FormSection>
+                </>
+            )}
+
             {/* Auto-Send Settings */}
             <Forms.FormSection title="Auto-Send">
                 <Select
@@ -450,6 +467,12 @@ const settings = definePluginSettings({
             { label: "GoFile", value: "GoFile" },
         ],
         description: "Select the file uploader service",
+        hidden: true
+    },
+    gofileToken: {
+        type: OptionType.STRING,
+        default: "",
+        description: "GoFile Token (optional)",
         hidden: true
     },
     autoSend: {
