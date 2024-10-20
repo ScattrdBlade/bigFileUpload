@@ -10,7 +10,7 @@ import { definePluginSettings } from "@api/Settings";
 import { Flex } from "@components/Flex";
 import { OpenExternalIcon } from "@components/Icons";
 import { Devs } from "@utils/constants";
-import { insertTextIntoChatInputBox } from "@utils/discord";
+import { insertTextIntoChatInputBox, sendMessage } from "@utils/discord";
 import { Margins } from "@utils/margins";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import { findByPropsLazy } from "@webpack";
@@ -253,6 +253,38 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                 />
             </Forms.FormSection>
 
+            {/* GoFile Settings */}
+            {fileUploader === "GoFile" && (
+                <>
+                    <Forms.FormDivider />
+                    <Forms.FormTitle>GoFile Settings</Forms.FormTitle>
+                    <Forms.FormSection title="GoFile Token (optional)">
+                        <TextInput
+                            type="text"
+                            value={settings.store.gofileToken || ""}
+                            placeholder="Insert GoFile Token"
+                            onChange={newValue => updateSetting("gofileToken", newValue)}
+                            className={Margins.bottom16}
+                        />
+                    </Forms.FormSection>
+                </>
+            )}
+
+            {/* Auto-Send Settings */}
+            <Forms.FormSection title="Auto-Send">
+                <Select
+                    options={[
+                        { label: "Yes", value: "Yes" },
+                        { label: "No", value: "No" },
+                    ]}
+                    placeholder="Select Auto-Send"
+                    className={Margins.bottom16}
+                    select={newValue => updateSetting("autoSend", newValue)}
+                    isSelected={v => v === settings.store.autoSend}
+                    serialize={v => v}
+                />
+            </Forms.FormSection>
+
             {/* Catbox Settings */}
             {fileUploader === "Catbox" && (
                 <>
@@ -437,6 +469,21 @@ const settings = definePluginSettings({
         description: "Select the file uploader service",
         hidden: true
     },
+    gofileToken: {
+        type: OptionType.STRING,
+        default: "",
+        description: "GoFile Token (optional)",
+        hidden: true
+    },
+    autoSend: {
+        type: OptionType.SELECT,
+        options: [
+            { label: "Yes", value: "Yes"},
+            { label: "No", value: "No", default: true },
+        ],
+        description: "Auto-Send",
+        hidden: true
+    },
     catboxUserHash: {
         type: OptionType.STRING,
         default: "",
@@ -516,6 +563,15 @@ const settings = definePluginSettings({
     customUploaderHeaders?: Record<string, string>;
 }>();
 
+function sendTextToChat(text: string) {
+    if (settings.store.autoSend === "No") {
+        insertTextIntoChatInputBox(text);
+    } else {
+        const channelId = SelectedChannelStore.getChannelId();
+        sendMessage(channelId, { content: text });
+    }
+}
+
 async function resolveFile(options: Argument[], ctx: CommandContext): Promise<File | null> {
     for (const opt of options) {
         if (opt.name === "file") {
@@ -540,7 +596,7 @@ async function uploadFileToGofile(file: File, channelId: string) {
 
         if (uploadResult.status === "ok") {
             const { downloadPage } = uploadResult.data;
-            setTimeout(() => insertTextIntoChatInputBox(`${downloadPage} `), 10);
+            setTimeout(() => sendTextToChat(`${downloadPage} `), 10);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         } else {
             console.error("Error uploading file:", uploadResult);
@@ -573,7 +629,7 @@ async function uploadFileToCatbox(file: File, channelId: string) {
                 finalUrl = `https://embeds.video/${finalUrl}`;
             }
 
-            setTimeout(() => insertTextIntoChatInputBox(`${finalUrl} `), 10);
+            setTimeout(() => sendTextToChat(`${finalUrl} `), 10);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         } else {
             console.error("Error uploading file:", uploadResult);
@@ -605,7 +661,7 @@ async function uploadFileToLitterbox(file: File, channelId: string) {
                 finalUrl = `https://embeds.video/${finalUrl}`;
             }
 
-            setTimeout(() => insertTextIntoChatInputBox(`${finalUrl}`), 10);
+            setTimeout(() => sendTextToChat(`${finalUrl}`), 10);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         } else {
             console.error("Error uploading file:", uploadResult);
@@ -641,7 +697,7 @@ async function uploadFileCustom(file: File, channelId: string) {
                 finalUrlModified = `https://embeds.video/${finalUrlModified}`;
             }
 
-            setTimeout(() => insertTextIntoChatInputBox(`${finalUrlModified} `), 10);
+            setTimeout(() => sendTextToChat(`${finalUrlModified} `), 10);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         } else {
             console.error("Error uploading file: Invalid URL returned");

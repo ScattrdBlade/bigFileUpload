@@ -4,12 +4,16 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-export async function uploadFileToGofileNative(_, url: string, fileBuffer: ArrayBuffer, fileName: string, fileType: string): Promise<any> {
+export async function uploadFileToGofileNative(_, url: string, fileBuffer: ArrayBuffer, fileName: string, fileType: string, token?: string): Promise<string> {
     try {
         const formData = new FormData();
 
         const file = new Blob([fileBuffer], { type: fileType });
         formData.append("file", new File([file], fileName));
+
+        if (token) {
+            formData.append("token", token);
+        }
 
         const options: RequestInit = {
             method: "POST",
