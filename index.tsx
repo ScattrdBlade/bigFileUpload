@@ -253,6 +253,21 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                 />
             </Forms.FormSection>
 
+            {/* Auto-Send Settings */}
+            <Forms.FormSection title="Auto-Send Link In Chat">
+                <Select
+                    options={[
+                        { label: "Yes", value: "Yes" },
+                        { label: "No", value: "No" },
+                    ]}
+                    placeholder="Select Auto-Send"
+                    className={Margins.bottom16}
+                    select={newValue => updateSetting("autoSend", newValue)}
+                    isSelected={v => v === settings.store.autoSend}
+                    serialize={v => v}
+                />
+            </Forms.FormSection>
+
             {/* GoFile Settings */}
             {fileUploader === "GoFile" && (
                 <>
@@ -269,21 +284,6 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                     </Forms.FormSection>
                 </>
             )}
-
-            {/* Auto-Send Settings */}
-            <Forms.FormSection title="Auto-Send">
-                <Select
-                    options={[
-                        { label: "Yes", value: "Yes" },
-                        { label: "No", value: "No" },
-                    ]}
-                    placeholder="Select Auto-Send"
-                    className={Margins.bottom16}
-                    select={newValue => updateSetting("autoSend", newValue)}
-                    isSelected={v => v === settings.store.autoSend}
-                    serialize={v => v}
-                />
-            </Forms.FormSection>
 
             {/* Catbox Settings */}
             {fileUploader === "Catbox" && (
@@ -478,7 +478,7 @@ const settings = definePluginSettings({
     autoSend: {
         type: OptionType.SELECT,
         options: [
-            { label: "Yes", value: "Yes"},
+            { label: "Yes", value: "Yes" },
             { label: "No", value: "No", default: true },
         ],
         description: "Auto-Send",
