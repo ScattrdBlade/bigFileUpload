@@ -14,7 +14,7 @@ import { insertTextIntoChatInputBox, sendMessage } from "@utils/discord";
 import { Margins } from "@utils/margins";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import { findByPropsLazy } from "@webpack";
-import { Button, DraftType, Forms, Menu, PermissionsBits, PermissionStore, React, Select, SelectedChannelStore, showToast, TextInput, UploadManager, useEffect, useState } from "@webpack/common";
+import { Button, DraftType, Forms, Menu, PermissionsBits, PermissionStore, React, Select, SelectedChannelStore, showToast, Switch, TextInput, Toasts, UploadManager, useEffect, useState } from "@webpack/common";
 
 const Native = VencordNative.pluginHelpers.BigFileUpload as PluginNative<typeof import("./native")>;
 
@@ -96,11 +96,12 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
 
     function updateSetting(key: keyof typeof settings.store, value: any) {
         if (key in settings.store) {
-            settings.store[key] = value;
+            (settings.store as any)[key] = value;
         } else {
             console.error(`Invalid setting key: ${key}`);
         }
     }
+
 
     function handleShareXConfigUpload(event: React.ChangeEvent<HTMLInputElement>) {
         const file = event.target.files?.[0];
@@ -237,13 +238,17 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
     return (
         <Flex flexDirection="column">
             {/* File Uploader Selection */}
-            <Forms.FormSection title="Select the file uploader service">
+            <Forms.FormDivider />
+            <Forms.FormSection title="Upload Limit Bypass">
+                <Forms.FormText type={Forms.FormText.Types.DESCRIPTION}>
+                    Select the external file uploader service to be used to bypass the upload limit.
+                </Forms.FormText>
                 <Select
                     options={[
                         { label: "Custom Uploader", value: "Custom" },
-                        { label: "Catbox", value: "Catbox" },
-                        { label: "Litterbox", value: "Litterbox" },
-                        { label: "GoFile", value: "GoFile" },
+                        { label: "Catbox (Up to 200MB)", value: "Catbox" },
+                        { label: "Litterbox (Temporary | Up to 1GB)", value: "Litterbox" },
+                        { label: "GoFile (Temporary | Unlimited | No Embeds)", value: "GoFile" },
                     ]}
                     placeholder="Select the file uploader service"
                     className={Margins.bottom16}
@@ -254,32 +259,30 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
             </Forms.FormSection>
 
             {/* Auto-Send Settings */}
-            <Forms.FormSection title="Auto-Send Link In Chat">
-                <Select
-                    options={[
-                        { label: "Yes", value: "Yes" },
-                        { label: "No", value: "No" },
-                    ]}
-                    placeholder="Select Auto-Send"
-                    className={Margins.bottom16}
-                    select={newValue => updateSetting("autoSend", newValue)}
-                    isSelected={v => v === settings.store.autoSend}
-                    serialize={v => v}
-                />
+            <Forms.FormSection>
+                <Switch
+                    value={settings.store.autoSend === "Yes"}
+                    onChange={(enabled: boolean) => updateSetting("autoSend", enabled ? "Yes" : "No")}
+                    note="Whether to automatically send the links with the uploaded files to chat instead of just pasting them into the chatbox."
+                    hideBorder={true}
+                >
+                    Auto-Send Uploads To Chat
+                </Switch>
             </Forms.FormSection>
 
             {/* GoFile Settings */}
             {fileUploader === "GoFile" && (
                 <>
-                    <Forms.FormDivider />
-                    <Forms.FormTitle>GoFile Settings</Forms.FormTitle>
                     <Forms.FormSection title="GoFile Token (optional)">
+                        <Forms.FormText type={Forms.FormText.Types.DESCRIPTION}>
+                            Insert your personal GoFile account's token to save all uploads to your GoFile account.
+                        </Forms.FormText>
                         <TextInput
                             type="text"
                             value={settings.store.gofileToken || ""}
                             placeholder="Insert GoFile Token"
                             onChange={newValue => updateSetting("gofileToken", newValue)}
-                            className={Margins.bottom16}
+                            className={Margins.top16}
                         />
                     </Forms.FormSection>
                 </>
@@ -288,15 +291,16 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
             {/* Catbox Settings */}
             {fileUploader === "Catbox" && (
                 <>
-                    <Forms.FormDivider />
-                    <Forms.FormTitle>Catbox Settings</Forms.FormTitle>
                     <Forms.FormSection title="Catbox User hash (optional)">
+                        <Forms.FormText type={Forms.FormText.Types.DESCRIPTION}>
+                            Insert your personal Catbox account's hash to save all uploads to your Catbox account.
+                        </Forms.FormText>
                         <TextInput
                             type="text"
                             value={settings.store.catboxUserHash || ""}
                             placeholder="Insert User Hash"
                             onChange={newValue => updateSetting("catboxUserHash", newValue)}
-                            className={Margins.bottom16}
+                            className={Margins.top16}
                         />
                     </Forms.FormSection>
                 </>
@@ -305,9 +309,10 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
             {/* Litterbox Settings */}
             {fileUploader === "Litterbox" && (
                 <>
-                    <Forms.FormDivider />
-                    <Forms.FormTitle>Litterbox Settings</Forms.FormTitle>
-                    <Forms.FormSection title="Select the file expiration time">
+                    <Forms.FormSection title="File Expiration Time">
+                        <Forms.FormText type={Forms.FormText.Types.DESCRIPTION}>
+                            Select how long it should take for your uploads to expire and get deleted.
+                        </Forms.FormText>
                         <Select
                             options={[
                                 { label: "1 hour", value: "1h" },
@@ -316,7 +321,7 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                                 { label: "72 hours", value: "72h" },
                             ]}
                             placeholder="Select Duration"
-                            className={Margins.bottom16}
+                            className={Margins.top16}
                             select={newValue => updateSetting("litterboxTime", newValue)}
                             isSelected={v => v === settings.store.litterboxTime}
                             serialize={v => v}
@@ -328,7 +333,7 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
             {/* Custom Uploader Settings */}
             {fileUploader === "Custom" && (
                 <>
-                    <Forms.FormSection title="Name of the custom uploader">
+                    <Forms.FormSection title="Custom Uploader Name">
                         <TextInput
                             type="text"
                             value={customUploaderStore.get().name}
@@ -338,27 +343,27 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                         />
                     </Forms.FormSection>
 
-                    <Forms.FormSection title="Request URL for the custom uploader">
+                    <Forms.FormSection title="Request URL">
                         <TextInput
                             type="text"
                             value={customUploaderStore.get().requestURL}
-                            placeholder="Request URL"
+                            placeholder="URL"
                             onChange={(newValue: string) => customUploaderStore.set({ requestURL: newValue })}
                             className={Margins.bottom16}
                         />
                     </Forms.FormSection>
 
-                    <Forms.FormSection title="File form name for the custom uploader">
+                    <Forms.FormSection title="File Form Name">
                         <TextInput
                             type="text"
                             value={customUploaderStore.get().fileFormName}
-                            placeholder="File Form Name"
+                            placeholder="Name"
                             onChange={(newValue: string) => customUploaderStore.set({ fileFormName: newValue })}
                             className={Margins.bottom16}
                         />
                     </Forms.FormSection>
 
-                    <Forms.FormSection title="Response type for the custom uploader">
+                    <Forms.FormSection title="Response type">
                         <Select
                             options={[
                                 { label: "Text", value: "Text" },
@@ -372,21 +377,21 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                         />
                     </Forms.FormSection>
 
-                    <Forms.FormSection title="URL (JSON path) for the custom uploader">
+                    <Forms.FormSection title="URL (JSON path)">
                         <TextInput
                             type="text"
                             value={customUploaderStore.get().url}
-                            placeholder="URL (JSON path)"
+                            placeholder="URL"
                             onChange={(newValue: string) => customUploaderStore.set({ url: newValue })}
                             className={Margins.bottom16}
                         />
                     </Forms.FormSection>
 
-                    <Forms.FormSection title="Thumbnail URL (JSON path) for the custom uploader">
+                    <Forms.FormSection title="Thumbnail URL (JSON path)">
                         <TextInput
                             type="text"
                             value={customUploaderStore.get().thumbnailURL}
-                            placeholder="Thumbnail URL (JSON path)"
+                            placeholder="Thumbnail URL"
                             onChange={(newValue: string) => customUploaderStore.set({ thumbnailURL: newValue })}
                             className={Margins.bottom16}
                         />
@@ -442,7 +447,7 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                         size={Button.Sizes.XLARGE}
                         className={Margins.bottom16}
                     >
-                        Select File
+                        Import
                     </Button>
                     <input
                         ref={fileInputRef}
@@ -594,18 +599,21 @@ async function uploadFileToGofile(file: File, channelId: string) {
 
         const uploadResult = await Native.uploadFileToGofileNative(`https://${server}.gofile.io/uploadFile`, arrayBuffer, fileName, fileType);
 
-        if (uploadResult.status === "ok") {
-            const { downloadPage } = uploadResult.data;
+        if ((uploadResult as any).status === "ok") {
+            const { downloadPage } = (uploadResult as any).data;
             setTimeout(() => sendTextToChat(`${downloadPage} `), 10);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
-        } else {
-            console.error("Error uploading file:", uploadResult);
-            sendBotMessage(channelId, { content: "Error uploading file. Check the console for more info." });
+        }
+        else {
+            console.error("Unable to upload file. This is likely an issue with your network connection, firewall, or VPN.", uploadResult);
+            sendBotMessage(channelId, { content: "**Unable to upload file.** Check the console for more info. \n-# This is likely an issue with your network connection, firewall, or VPN." });
+            showToast("File Upload Failed", Toasts.Type.FAILURE);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         }
     } catch (error) {
-        console.error("Error uploading file:", error);
-        sendBotMessage(channelId, { content: "Error uploading file. Check the console for more info." });
+        console.error("Unable to upload file. This is likely an issue with your network connection, firewall, or VPN.", error);
+        sendBotMessage(channelId, { content: "**Unable to upload file.** Check the console for more info. \n-# This is likely an issue with your network connection, firewall, or VPN." });
+        showToast("File Upload Failed", Toasts.Type.FAILURE);
         UploadManager.clearAll(channelId, DraftType.SlashCommand);
     }
 }
@@ -630,15 +638,18 @@ async function uploadFileToCatbox(file: File, channelId: string) {
             }
 
             setTimeout(() => sendTextToChat(`${finalUrl} `), 10);
+            showToast("File Successfully Uploaded!", Toasts.Type.SUCCESS);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         } else {
-            console.error("Error uploading file:", uploadResult);
-            sendBotMessage(channelId, { content: "Error uploading file. Check the console for more info." });
+            console.error("Unable to upload file. This is likely an issue with your network connection, firewall, or VPN.", uploadResult);
+            sendBotMessage(channelId, { content: "**Unable to upload file.** Check the console for more info. \n-# This is likely an issue with your network connection, firewall, or VPN." });
+            showToast("File Upload Failed", Toasts.Type.FAILURE);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         }
     } catch (error) {
-        console.error("Error uploading file:", error);
-        sendBotMessage(channelId, { content: "Error uploading file. Check the console for more info." });
+        console.error("Unable to upload file. This is likely an issue with your network connection, firewall, or VPN.", error);
+        sendBotMessage(channelId, { content: "**Unable to upload file.** Check the console for more info. \n-# This is likely an issue with your network connection, firewall, or VPN." });
+        showToast("File Upload Failed", Toasts.Type.FAILURE);
         UploadManager.clearAll(channelId, DraftType.SlashCommand);
     }
 }
@@ -662,15 +673,18 @@ async function uploadFileToLitterbox(file: File, channelId: string) {
             }
 
             setTimeout(() => sendTextToChat(`${finalUrl}`), 10);
+            showToast("File Successfully Uploaded!", Toasts.Type.SUCCESS);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         } else {
-            console.error("Error uploading file:", uploadResult);
-            sendBotMessage(channelId, { content: "Error uploading file. Check the console for more info." });
+            console.error("Unable to upload file. This is likely an issue with your network connection, firewall, or VPN.", uploadResult);
+            showToast("File Upload Failed", Toasts.Type.FAILURE);
+            sendBotMessage(channelId, { content: "**Unable to upload file.** Check the console for more info. \n-# This is likely an issue with your network connection, firewall, or VPN." });
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         }
     } catch (error) {
-        console.error("Error uploading file:", error);
-        sendBotMessage(channelId, { content: "Error uploading file. Check the console for more info." });
+        console.error("Unable to upload file. This is likely an issue with your network connection, firewall, or VPN.", error);
+        sendBotMessage(channelId, { content: "**Unable to upload file.** Check the console for more info. \n-# This is likely an issue with your network connection, firewall, or VPN." });
+        showToast("File Upload Failed", Toasts.Type.FAILURE);
         UploadManager.clearAll(channelId, DraftType.SlashCommand);
     }
 }
@@ -698,15 +712,18 @@ async function uploadFileCustom(file: File, channelId: string) {
             }
 
             setTimeout(() => sendTextToChat(`${finalUrlModified} `), 10);
+            showToast("File Successfully Uploaded!", Toasts.Type.SUCCESS);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         } else {
-            console.error("Error uploading file: Invalid URL returned");
-            sendBotMessage(channelId, { content: "Error uploading file. Check the console for more info." });
+            console.error("Unable to upload file. This is likely an issue with your network connection, firewall, or VPN. Invalid URL returned");
+            sendBotMessage(channelId, { content: "**Unable to upload file.** Check the console for more info. \n-# This is likely an issue with your network connection, firewall, or VPN." });
+            showToast("File Upload Failed", Toasts.Type.FAILURE);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         }
     } catch (error) {
-        console.error("Error uploading file:", error);
-        sendBotMessage(channelId, { content: `Error uploading file: ${error}. Check the console for more info.` });
+        console.error("Unable to upload file. This is likely an issue with your network connection, firewall, or VPN.", error);
+        sendBotMessage(channelId, { content: `Unable to upload file. This is likely an issue with your network connection, firewall, or VPN. ${error}. Check the console for more info. \n-# This is likely an issue with your network connection, firewall, or VPN.` });
+        showToast("File Upload Failed", Toasts.Type.FAILURE);
         UploadManager.clearAll(channelId, DraftType.SlashCommand);
     }
 }
