@@ -270,6 +270,18 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                 </Switch>
             </Forms.FormSection>
 
+            {/* Auto-Format Settings */}
+            <Forms.FormSection>
+                <Switch
+                    value={settings.store.autoFormat === "Yes"}
+                    onChange={(enabled: boolean) => updateSetting("autoFormat", enabled ? "Yes" : "No")}
+                    note="Whether to mask the link to match the original filename."
+                    hideBorder={true}
+                >
+                    Auto-Mask Links
+                </Switch>
+            </Forms.FormSection>
+
             {/* GoFile Settings */}
             {fileUploader === "GoFile" && (
                 <>
@@ -489,6 +501,15 @@ const settings = definePluginSettings({
         description: "Auto-Send",
         hidden: true
     },
+    autoFormat:  {
+        type: OptionType.SELECT,
+        options: [
+            { label: "Yes", value: "Yes" },
+            { label: "No", value: "No", default: true },
+        ],
+        description: "Auto-Format",
+        hidden: true
+    },
     catboxUserHash: {
         type: OptionType.STRING,
         default: "",
@@ -601,7 +622,13 @@ async function uploadFileToGofile(file: File, channelId: string) {
 
         if ((uploadResult as any).status === "ok") {
             const { downloadPage } = (uploadResult as any).data;
-            setTimeout(() => sendTextToChat(`${downloadPage} `), 10);
+            let finalUrlModified = downloadPage;
+
+            if (settings.store.autoFormat === "Yes") {
+                finalUrlModified = `[${fileName}](${finalUrlModified})`
+            }
+
+            setTimeout(() => sendTextToChat(`${finalUrlModified} `), 10);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         }
         else {
@@ -637,6 +664,10 @@ async function uploadFileToCatbox(file: File, channelId: string) {
                 finalUrl = `https://embeds.video/${finalUrl}`;
             }
 
+            if (settings.store.autoFormat === "Yes") {
+                finalUrl = `[${fileName}](${finalUrl})`
+            }
+
             setTimeout(() => sendTextToChat(`${finalUrl} `), 10);
             showToast("File Successfully Uploaded!", Toasts.Type.SUCCESS);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
@@ -670,6 +701,10 @@ async function uploadFileToLitterbox(file: File, channelId: string) {
 
             if (fileSizeMB >= 150 && videoExtensions.some(ext => finalUrl.endsWith(ext))) {
                 finalUrl = `https://embeds.video/${finalUrl}`;
+            }
+
+            if (settings.store.autoFormat === "Yes") {
+                finalUrl = `[${fileName}](${finalUrl})`
             }
 
             setTimeout(() => sendTextToChat(`${finalUrl}`), 10);
@@ -709,6 +744,10 @@ async function uploadFileCustom(file: File, channelId: string) {
 
             if (videoExtensions.some(ext => finalUrlModified.endsWith(ext))) {
                 finalUrlModified = `https://embeds.video/${finalUrlModified}`;
+            }
+
+            if (settings.store.autoFormat === "Yes") {
+                finalUrlModified = `[${fileName}](${finalUrl})`
             }
 
             setTimeout(() => sendTextToChat(`${finalUrlModified} `), 10);
