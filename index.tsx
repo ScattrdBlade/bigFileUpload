@@ -747,7 +747,7 @@ async function uploadFileCustom(file: File, channelId: string) {
             }
 
             if (settings.store.autoFormat === "Yes") {
-                finalUrlModified = `[${fileName}](${finalUrl})`
+                finalUrlModified = `[${fileName}](${finalUrlModified})`
             }
 
             setTimeout(() => sendTextToChat(`${finalUrlModified} `), 10);
