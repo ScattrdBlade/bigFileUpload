@@ -501,7 +501,7 @@ const settings = definePluginSettings({
         description: "Auto-Send",
         hidden: true
     },
-    autoFormat:  {
+    autoFormat: {
         type: OptionType.SELECT,
         options: [
             { label: "Yes", value: "Yes" },
@@ -622,13 +622,13 @@ async function uploadFileToGofile(file: File, channelId: string) {
 
         if ((uploadResult as any).status === "ok") {
             const { downloadPage } = (uploadResult as any).data;
-            let finalUrlModified = downloadPage;
+            let finalUrl = downloadPage;
 
             if (settings.store.autoFormat === "Yes") {
-                finalUrlModified = `[${fileName}](${finalUrlModified})`
+                finalUrl = `[${fileName}](${finalUrl})`;
             }
 
-            setTimeout(() => sendTextToChat(`${finalUrlModified} `), 10);
+            setTimeout(() => sendTextToChat(`${finalUrl} `), 10);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         }
         else {
@@ -665,7 +665,7 @@ async function uploadFileToCatbox(file: File, channelId: string) {
             }
 
             if (settings.store.autoFormat === "Yes") {
-                finalUrl = `[${fileName}](${finalUrl})`
+                finalUrl = `[${fileName}](${finalUrl})`;
             }
 
             setTimeout(() => sendTextToChat(`${finalUrl} `), 10);
@@ -704,7 +704,7 @@ async function uploadFileToLitterbox(file: File, channelId: string) {
             }
 
             if (settings.store.autoFormat === "Yes") {
-                finalUrl = `[${fileName}](${finalUrl})`
+                finalUrl = `[${fileName}](${finalUrl})`;
             }
 
             setTimeout(() => sendTextToChat(`${finalUrl}`), 10);
@@ -726,45 +726,90 @@ async function uploadFileToLitterbox(file: File, channelId: string) {
 
 async function uploadFileCustom(file: File, channelId: string) {
     try {
+
         const arrayBuffer = await file.arrayBuffer();
         const fileName = file.name;
         const fileType = file.type;
 
         const fileFormName = settings.store.customUploaderFileFormName || "file[]";
-        const customArgs = JSON.parse(settings.store.customUploaderArgs || "{}");
-        const customHeaders = JSON.parse(settings.store.customUploaderHeaders || "{}");
         const responseType = settings.store.customUploaderResponseType;
-        const urlPath = settings.store.customUploaderURL.split(".");
 
-        const finalUrl = await Native.uploadFileCustomNative(settings.store.customUploaderRequestURL, arrayBuffer, fileName, fileType, fileFormName, customArgs, customHeaders, responseType, urlPath);
-
-        if (finalUrl.startsWith("https://") || finalUrl.startsWith("http://")) {
-            const videoExtensions = [".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".wmv", ".m4v", ".mpg", ".mpeg", ".3gp", ".ogv"];
-            let finalUrlModified = finalUrl;
-
-            if (videoExtensions.some(ext => finalUrlModified.endsWith(ext))) {
-                finalUrlModified = `https://embeds.video/${finalUrlModified}`;
-            }
-
-            if (settings.store.autoFormat === "Yes") {
-                finalUrlModified = `[${fileName}](${finalUrlModified})`
-            }
-
-            setTimeout(() => sendTextToChat(`${finalUrlModified} `), 10);
-            showToast("File Successfully Uploaded!", Toasts.Type.SUCCESS);
-            UploadManager.clearAll(channelId, DraftType.SlashCommand);
-        } else {
-            console.error("Unable to upload file. This is likely an issue with your network connection, firewall, or VPN. Invalid URL returned");
-            sendBotMessage(channelId, { content: "**Unable to upload file.** Check the console for more info. \n-# This is likely an issue with your network connection, firewall, or VPN." });
-            showToast("File Upload Failed", Toasts.Type.FAILURE);
-            UploadManager.clearAll(channelId, DraftType.SlashCommand);
+        let customArgs: Record<string, string>;
+        try {
+            customArgs = JSON.parse(settings.store.customUploaderArgs || "{}");
+        } catch (e) {
+            console.error("Failed to parse customUploaderArgs:", e);
+            customArgs = {};
         }
+
+        let customHeaders: Record<string, string>;
+        try {
+            const parsedHeaders = JSON.parse(settings.store.customUploaderHeaders || "{}");
+            customHeaders = Object.entries(parsedHeaders).reduce((acc, [key, value]) => {
+                if (key && typeof key === "string" && key.trim() !== "") {
+                    acc[key] = String(value);
+                } else {
+                    console.warn(`Invalid header name: "${key}". Removing it.`);
+                }
+                return acc;
+            }, {} as Record<string, string>);
+        } catch (e) {
+            console.error("Failed to parse customUploaderHeaders:", e);
+            customHeaders = {};
+        }
+
+        let baseUrl: string | URL | undefined;
+        try {
+            baseUrl = new URL(settings.store.customUploaderURL);
+        } catch (e) {
+            console.error("Invalid customUploaderURL:", settings.store.customUploaderURL, e);
+            throw new Error("Invalid base URL");
+        }
+        const urlPath = baseUrl.pathname.split("/").filter(segment => segment);
+
+        const finalUrl = await Native.uploadFileCustomNative(
+            settings.store.customUploaderRequestURL,
+            arrayBuffer,
+            fileName,
+            fileType,
+            fileFormName,
+            customArgs,
+            customHeaders,
+            responseType,
+            urlPath
+        );
+
+        let constructedUrl: string;
+        try {
+            constructedUrl = new URL(finalUrl, baseUrl).href;
+        } catch (e) {
+            console.error("Failed to construct URL:", finalUrl, baseUrl, e);
+            throw new Error("Invalid final URL");
+        }
+
+        const encodedUrl = encodeURI(constructedUrl);
+        const fileExtension = `.${fileName.split(".").pop()?.toLowerCase() ?? ""}`;
+        const videoExtensions = [".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".wmv", ".m4v", ".mpg", ".mpeg", ".3gp", ".ogv"];
+        let finalUrlForChat = encodedUrl;
+        if (videoExtensions.includes(fileExtension) && file.size > 60 * 1024 * 1024) {
+            finalUrlForChat = `https://embeds.video/${encodedUrl}`;
+        }
+
+        if (settings.store.autoFormat === "Yes") {
+            finalUrlForChat = `[${fileName}](${finalUrlForChat})`;
+        }
+
+        setTimeout(() => sendTextToChat(`${finalUrlForChat} `), 10);
+        showToast("File Successfully Uploaded!", Toasts.Type.SUCCESS);
     } catch (error) {
-        console.error("Unable to upload file. This is likely an issue with your network connection, firewall, or VPN.", error);
-        sendBotMessage(channelId, { content: `Unable to upload file. This is likely an issue with your network connection, firewall, or VPN. ${error}. Check the console for more info. \n-# This is likely an issue with your network connection, firewall, or VPN.` });
+        console.error("Unable to upload file:", error);
+        sendBotMessage(channelId, {
+            content: `Unable to upload file: ${error}. Check the console for more info.\n-# This could be due to network issues, firewall, VPN, or configuration errors.`
+        });
         showToast("File Upload Failed", Toasts.Type.FAILURE);
-        UploadManager.clearAll(channelId, DraftType.SlashCommand);
     }
+
+    UploadManager.clearAll(channelId, DraftType.SlashCommand);
 }
 
 async function uploadFile(file: File, channelId: string) {
