@@ -232,7 +232,6 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
     const triggerFileUpload = () => {
         if (fileInputRef.current) {
             fileInputRef.current.click();
-            showToast("File uploading..", Toasts.Type.SUCCESS);
         }
     };
 
@@ -814,6 +813,7 @@ async function uploadFileCustom(file: File, channelId: string) {
 }
 
 async function uploadFile(file: File, channelId: string) {
+    showToast("File uploading..", Toasts.Type.MESSAGE);
     const uploader = settings.store.fileUploader;
     switch (uploader) {
         case "GoFile":
