@@ -232,6 +232,7 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
     const triggerFileUpload = () => {
         if (fileInputRef.current) {
             fileInputRef.current.click();
+            showToast("File uploading..", Toasts.Type.SUCCESS);
         }
     };
 
