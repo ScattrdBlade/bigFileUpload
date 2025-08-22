@@ -88,7 +88,9 @@ export async function uploadFileCustomNative(_, url: string, fileBuffer: ArrayBu
         formData.append(fileFormName, new File([file], fileName));
 
         for (const [key, value] of Object.entries(customArgs)) {
-            formData.append(key, value);
+            if (key && key.trim() !== "") { // Only append if key is not empty
+                formData.append(key, value);
+            }
         }
 
         delete customHeaders["Content-Type"];
