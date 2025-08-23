@@ -1,4 +1,4 @@
-**UPDATE: Adjusted a few things to be compatible with Vencord's recent changes**
+**UPDATE: New uploading method that increases upload speed and success, as well as letting users set timeout length and providing more detailed errors and logging**
 
 > [!TIP]
 > **If you run into any issues, please let me know on [Discord](https://discord.gg/jHDJaW9Gyz)**
