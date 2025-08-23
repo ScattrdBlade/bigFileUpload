@@ -1,5 +1,4 @@
-**UPDATE: Fixed headers bug, added support for sub-domains, and general better RFC 2396 compliance.<br/>
-More custom file uploaders should be supported now.**
+**UPDATE: Adjusted a few things to be compatible with Vencord's recent changes**
 
 > [!TIP]
 > **If you run into any issues, please let me know on [Discord](https://discord.gg/jHDJaW9Gyz)**
