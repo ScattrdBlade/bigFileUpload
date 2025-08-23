@@ -13,7 +13,6 @@ import { Devs } from "@utils/constants";
 import { insertTextIntoChatInputBox, sendMessage } from "@utils/discord";
 import { Margins } from "@utils/margins";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
-import { CommandArgument, CommandContext } from "@vencord/discord-types";
 import { findByPropsLazy } from "@webpack";
 import { Button, DraftType, Forms, Menu, PermissionsBits, PermissionStore, React, Select, SelectedChannelStore, showToast, Switch, TextInput, Toasts, UploadManager, useEffect, useState } from "@webpack/common";
 
@@ -52,8 +51,29 @@ function createCloneableStore(initialState: any) {
     };
 }
 
+// Helper function to safely get error messages
+function getErrorMessage(error: unknown): string {
+    if (error instanceof Error) {
+        return error.message;
+    }
+    if (typeof error === "string") {
+        return error;
+    }
+    return String(error);
+}
+
+function sendTextToChat(text: string) {
+    if (settings.store.autoSend === "No") {
+        insertTextIntoChatInputBox(text);
+    } else {
+        const channelId = SelectedChannelStore.getChannelId();
+        sendMessage(channelId, { content: text });
+    }
+}
+
 function SettingsComponent(props: { setValue(v: any): void; }) {
-    const [fileUploader, setFileUploader] = useState(settings.store.fileUploader || "GoFile");
+    const initialUploader = settings.store.fileUploader || "Catbox";
+    const [fileUploader, setFileUploader] = useState(initialUploader);
     const [customUploaderStore] = useState(() => createCloneableStore({
         name: settings.store.customUploaderName || "",
         requestURL: settings.store.customUploaderRequestURL || "",
@@ -80,6 +100,10 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
     const fileInputRef = React.useRef<HTMLInputElement>(null);
 
     useEffect(() => {
+        if (!settings.store.fileUploader || settings.store.fileUploader.trim() === "") {
+            updateSetting("fileUploader", "Catbox");
+        }
+
         const unsubscribe = customUploaderStore.subscribe(() => {
             const state = customUploaderStore.get();
             updateSetting("customUploaderName", state.name);
@@ -102,7 +126,6 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
             console.error(`Invalid setting key: ${key}`);
         }
     }
-
 
     function handleShareXConfigUpload(event: React.ChangeEvent<HTMLInputElement>) {
         const file = event.target.files?.[0];
@@ -160,16 +183,21 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
 
     const validateCustomUploaderSettings = () => {
         if (fileUploader === "Custom") {
-            if (!settings.store.customUploaderRequestURL) {
+            if (!settings.store.customUploaderRequestURL || settings.store.customUploaderRequestURL.trim() === "") {
                 showToast("Custom uploader request URL is required.");
                 return false;
             }
-            if (!settings.store.customUploaderFileFormName) {
+            if (!settings.store.customUploaderFileFormName || settings.store.customUploaderFileFormName.trim() === "") {
                 showToast("Custom uploader file form name is required.");
                 return false;
             }
-            if (!settings.store.customUploaderURL) {
+            if (!settings.store.customUploaderURL || settings.store.customUploaderURL.trim() === "") {
                 showToast("Custom uploader URL (JSON path) is required.");
+                return false;
+            }
+            // Check for placeholder values that shouldn't be there
+            if (settings.store.customUploaderURL.includes("$json:") || settings.store.customUploaderURL.includes("$")) {
+                showToast("Please replace placeholder values in custom uploader URL field.");
                 return false;
             }
         }
@@ -177,6 +205,11 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
     };
 
     const handleFileUploaderChange = (v: string) => {
+        if (!v || v.trim() === "") {
+            console.warn("Attempted to select empty uploader, keeping current selection");
+            return;
+        }
+
         if (v === "Custom" && !validateCustomUploaderSettings()) {
             return;
         }
@@ -200,6 +233,7 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
 
         customUploaderStore.set({ args: newArgs });
 
+        // Only add empty key-value pair if all current ones are filled
         if (Object.values(newArgs).every(v => v !== "") && Object.keys(newArgs).every(k => k !== "")) {
             newArgs[""] = "";
         }
@@ -223,6 +257,7 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
 
         customUploaderStore.set({ headers: newHeaders });
 
+        // Only add empty key-value pair if all current ones are filled
         if (Object.values(newHeaders).every(v => v !== "") && Object.keys(newHeaders).every(k => k !== "")) {
             newHeaders[""] = "";
         }
@@ -238,28 +273,28 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
 
     return (
         <Flex flexDirection="column">
-            {/* File Uploader Selection */}
             <Forms.FormDivider />
             <Forms.FormSection title="Upload Limit Bypass">
                 <Forms.FormText>
                     Select the external file uploader service to be used to bypass the upload limit.
+                    If a service fails, the plugin will automatically try other services as fallbacks.
                 </Forms.FormText>
                 <Select
                     options={[
-                        { label: "Custom Uploader", value: "Custom" },
+                        { label: "GoFile (Temporary | Unlimited)", value: "GoFile" },
                         { label: "Catbox (Up to 200MB)", value: "Catbox" },
                         { label: "Litterbox (Temporary | Up to 1GB)", value: "Litterbox" },
-                        { label: "GoFile (Temporary | Unlimited | No Embeds)", value: "GoFile" },
+                        { label: "Custom Uploader", value: "Custom" },
                     ]}
-                    placeholder="Select the file uploader service"
                     className={Margins.bottom16}
                     select={handleFileUploaderChange}
                     isSelected={v => v === fileUploader}
                     serialize={v => v}
+                    closeOnSelect={true}
+                    clearable={false}
                 />
             </Forms.FormSection>
 
-            {/* Auto-Send Settings */}
             <Forms.FormSection>
                 <Switch
                     value={settings.store.autoSend === "Yes"}
@@ -271,7 +306,6 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                 </Switch>
             </Forms.FormSection>
 
-            {/* Auto-Format Settings */}
             <Forms.FormSection>
                 <Switch
                     value={settings.store.autoFormat === "Yes"}
@@ -283,7 +317,26 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                 </Switch>
             </Forms.FormSection>
 
-            {/* GoFile Settings */}
+            <Forms.FormSection title="Upload Timeout">
+                <Forms.FormText>
+                    Configure how long to wait for large file uploads before timing out. Higher settings allow larger files but may hang longer if the upload fails.
+                </Forms.FormText>
+                <Select
+                    options={[
+                        { label: "Conservative (10 min max)", value: "conservative" },
+                        { label: "Standard (20 min max)", value: "standard" },
+                        { label: "Extended (30 min max)", value: "extended" },
+                        { label: "Maximum (60 min max)", value: "maximum" },
+                    ]}
+                    className={Margins.bottom16}
+                    select={(newValue: string) => updateSetting("uploadTimeout", newValue)}
+                    isSelected={(v: string) => v === (settings.store.uploadTimeout || "standard")}
+                    serialize={(v: string) => v}
+                    closeOnSelect={true}
+                    clearable={false}
+                />
+            </Forms.FormSection>
+
             {fileUploader === "GoFile" && (
                 <>
                     <Forms.FormSection title="GoFile Token (optional)">
@@ -301,7 +354,6 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                 </>
             )}
 
-            {/* Catbox Settings */}
             {fileUploader === "Catbox" && (
                 <>
                     <Forms.FormSection title="Catbox User hash (optional)">
@@ -319,7 +371,6 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                 </>
             )}
 
-            {/* Litterbox Settings */}
             {fileUploader === "Litterbox" && (
                 <>
                     <Forms.FormSection title="File Expiration Time">
@@ -343,9 +394,16 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                 </>
             )}
 
-            {/* Custom Uploader Settings */}
             {fileUploader === "Custom" && (
                 <>
+                    <Forms.FormDivider />
+                    <Forms.FormSection title="Custom Uploader Configuration">
+                        <Forms.FormText>
+                            Configure a custom file uploader. This is the most flexible option and can work around Content Security Policy restrictions.
+                            <br /><br />
+                            <strong>CSP-Compliant Alternatives:</strong> If Catbox/Litterbox get blocked, try services that use domains like *.githubusercontent.com, *.imgur.com, or other whitelisted domains.
+                        </Forms.FormText>
+                    </Forms.FormSection>
                     <Forms.FormSection title="Custom Uploader Name">
                         <TextInput
                             type="text"
@@ -391,10 +449,15 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                     </Forms.FormSection>
 
                     <Forms.FormSection title="URL (JSON path)">
+                        <Forms.FormText>
+                            Enter the JSON path to extract the file URL from the response.<br />
+                            Examples: "url", "data.file_url", "result.download_link"<br />
+                            <strong>Do NOT enter a full URL here - just the JSON path.</strong>
+                        </Forms.FormText>
                         <TextInput
                             type="text"
                             value={customUploaderStore.get().url}
-                            placeholder="URL"
+                            placeholder="url"
                             onChange={(newValue: string) => customUploaderStore.set({ url: newValue })}
                             className={Margins.bottom16}
                         />
@@ -479,10 +542,10 @@ const settings = definePluginSettings({
     fileUploader: {
         type: OptionType.SELECT,
         options: [
+            { label: "GoFile (Streaming)", value: "GoFile" },
+            { label: "Catbox (Up to 200MB)", value: "Catbox", default: true },
+            { label: "Litterbox (Temporary | Up to 1GB)", value: "Litterbox" },
             { label: "Custom Uploader", value: "Custom" },
-            { label: "Catbox", value: "Catbox", default: true },
-            { label: "Litterbox", value: "Litterbox" },
-            { label: "GoFile", value: "GoFile" },
         ],
         description: "Select the file uploader service",
         hidden: true
@@ -509,6 +572,17 @@ const settings = definePluginSettings({
             { label: "No", value: "No", default: true },
         ],
         description: "Auto-Format",
+        hidden: true
+    },
+    uploadTimeout: {
+        type: OptionType.SELECT,
+        options: [
+            { label: "Conservative (10 min max)", value: "conservative" },
+            { label: "Standard (20 min max)", value: "standard", default: true },
+            { label: "Extended (30 min max)", value: "extended" },
+            { label: "Maximum (60 min max)", value: "maximum" },
+        ],
+        description: "Upload timeout for large files",
         hidden: true
     },
     catboxUserHash: {
@@ -590,16 +664,30 @@ const settings = definePluginSettings({
     customUploaderHeaders?: Record<string, string>;
 }>();
 
-function sendTextToChat(text: string) {
-    if (settings.store.autoSend === "No") {
-        insertTextIntoChatInputBox(text);
-    } else {
-        const channelId = SelectedChannelStore.getChannelId();
-        sendMessage(channelId, { content: text });
+function handleCSPError(error: unknown, serviceName: string, channelId: string) {
+    const errorMessage = getErrorMessage(error);
+    const isCSPError = errorMessage.includes("Content Security Policy") ||
+        errorMessage.includes("CSP") ||
+        errorMessage.includes("violates the following Content Security Policy directive");
+
+    if (isCSPError) {
+        console.error(`CSP blocking ${serviceName}:`, error);
+        sendBotMessage(channelId, {
+            content: `**${serviceName} blocked by Content Security Policy**\n` +
+                `Discord's security policy is preventing uploads to ${serviceName}.\n\n` +
+                "**Solutions:**\n" +
+                "• Try using the **Custom uploader** with a CSP-compliant service\n" +
+                "• Switch to GoFile which has CSP workarounds\n" +
+                "• Check plugin settings for alternative upload services\n\n" +
+                "-# This is a Discord security restriction, not a plugin issue."
+        });
+        showToast(`${serviceName} blocked by CSP - Try Custom uploader`, Toasts.Type.FAILURE);
+        return true;
     }
+    return false;
 }
 
-async function resolveFile(options: CommandArgument[], ctx: CommandContext): Promise<File | null> {
+async function resolveFile(options: any[], ctx: any): Promise<File | null> {
     for (const opt of options) {
         if (opt.name === "file") {
             const upload = UploadStore.getUpload(ctx.channel.id, opt.name, DraftType.SlashCommand);
@@ -609,170 +697,204 @@ async function resolveFile(options: CommandArgument[], ctx: CommandContext): Pro
     return null;
 }
 
-async function uploadFileToGofile(file: File, channelId: string) {
+/**
+ * GoFile upload
+ */
+async function uploadFileToGofileWithStreaming(file: File, channelId: string) {
+    console.log(`[GoFile] Starting upload for ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
+
+    const servers = [
+        "store1", "store2", "store3", "store4", "store5", "store6", "store7", "store8", "store9", "store10",
+        "store-eu-par-1", "store-eu-par-2", "store-eu-par-3", "store-eu-par-4",
+        "store-na-phx-1"
+    ];
+    const server = servers[Math.floor(Math.random() * servers.length)];
+
     try {
+        const startTime = Date.now();
+
+        console.log("[GoFile] Converting file to ArrayBuffer...");
         const arrayBuffer = await file.arrayBuffer();
-        const fileName = file.name;
-        const fileType = file.type;
+        console.log(`[GoFile] ArrayBuffer conversion completed (${arrayBuffer.byteLength} bytes)`);
+        console.log(`[GoFile] Uploading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
 
-        const serverResponse = await fetch("https://api.gofile.io/servers");
-        const serverData = await serverResponse.json();
-        const server = serverData.data.servers[Math.floor(Math.random() * serverData.data.servers.length)].name;
+        const uploadResult = await Native.uploadFileToGofileNative(
+            `https://${server}.gofile.io/uploadFile`,
+            arrayBuffer,
+            file.name,
+            file.type,
+            settings.store.gofileToken
+        );
 
-        const uploadResult = await Native.uploadFileToGofileNative(`https://${server}.gofile.io/uploadFile`, arrayBuffer, fileName, fileType);
+        const uploadTime = Date.now() - startTime;
+        console.log(`[GoFile] Upload completed in ${uploadTime}ms`);
 
         if ((uploadResult as any).status === "ok") {
             const { downloadPage } = (uploadResult as any).data;
             let finalUrl = downloadPage;
 
             if (settings.store.autoFormat === "Yes") {
-                finalUrl = `[${fileName}](${finalUrl})`;
+                finalUrl = `[${file.name}](${finalUrl})`;
             }
 
             setTimeout(() => sendTextToChat(`${finalUrl} `), 10);
-            UploadManager.clearAll(channelId, DraftType.SlashCommand);
-        }
-        else {
-            console.error("Unable to upload file. This is likely an issue with your network connection, firewall, or VPN.", uploadResult);
-            sendBotMessage(channelId, { content: "**Unable to upload file.** Check the console for more info. \n-# This is likely an issue with your network connection, firewall, or VPN." });
-            showToast("File Upload Failed", Toasts.Type.FAILURE);
-            UploadManager.clearAll(channelId, DraftType.SlashCommand);
-        }
-    } catch (error) {
-        console.error("Unable to upload file. This is likely an issue with your network connection, firewall, or VPN.", error);
-        sendBotMessage(channelId, { content: "**Unable to upload file.** Check the console for more info. \n-# This is likely an issue with your network connection, firewall, or VPN." });
-        showToast("File Upload Failed", Toasts.Type.FAILURE);
-        UploadManager.clearAll(channelId, DraftType.SlashCommand);
-    }
-}
-
-async function uploadFileToCatbox(file: File, channelId: string) {
-    try {
-        const url = "https://catbox.moe/user/api.php";
-        const userHash = settings.store.catboxUserHash;
-        const fileSizeMB = file.size / (1024 * 1024);
-
-        const arrayBuffer = await file.arrayBuffer();
-        const fileName = file.name;
-
-        const uploadResult = await Native.uploadFileToCatboxNative(url, arrayBuffer, fileName, file.type, userHash);
-
-        if (uploadResult.startsWith("https://") || uploadResult.startsWith("http://")) {
-            const videoExtensions = [".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".wmv", ".m4v", ".mpg", ".mpeg", ".3gp", ".ogv"];
-            let finalUrl = uploadResult;
-
-            if (fileSizeMB >= 150 && videoExtensions.some(ext => finalUrl.endsWith(ext))) {
-                finalUrl = `https://embeds.video/${finalUrl}`;
-            }
-
-            if (settings.store.autoFormat === "Yes") {
-                finalUrl = `[${fileName}](${finalUrl})`;
-            }
-
-            setTimeout(() => sendTextToChat(`${finalUrl} `), 10);
-            showToast("File Successfully Uploaded!", Toasts.Type.SUCCESS);
+            showToast(`${file.name} Successfully Uploaded to GoFile!`, Toasts.Type.SUCCESS);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         } else {
-            console.error("Unable to upload file. This is likely an issue with your network connection, firewall, or VPN.", uploadResult);
-            sendBotMessage(channelId, { content: "**Unable to upload file.** Check the console for more info. \n-# This is likely an issue with your network connection, firewall, or VPN." });
-            showToast("File Upload Failed", Toasts.Type.FAILURE);
-            UploadManager.clearAll(channelId, DraftType.SlashCommand);
+            throw new Error(`GoFile upload failed: ${JSON.stringify(uploadResult)}`);
         }
-    } catch (error) {
-        console.error("Unable to upload file. This is likely an issue with your network connection, firewall, or VPN.", error);
-        sendBotMessage(channelId, { content: "**Unable to upload file.** Check the console for more info. \n-# This is likely an issue with your network connection, firewall, or VPN." });
-        showToast("File Upload Failed", Toasts.Type.FAILURE);
-        UploadManager.clearAll(channelId, DraftType.SlashCommand);
+    } catch (nativeError) {
+        const errorMsg = getErrorMessage(nativeError);
+        const sizeMB = file.size / (1024 * 1024);
+
+        if (errorMsg.includes("413") || errorMsg.includes("payload too large")) {
+            throw new Error(`GoFile rejected file: too large (${sizeMB.toFixed(1)}MB)`);
+        } else if (errorMsg.includes("timeout") || errorMsg.includes("network")) {
+            throw new Error(`GoFile upload timeout (${sizeMB.toFixed(1)}MB file may be too large)`);
+        }
+
+        throw new Error(`GoFile streaming upload failed: ${errorMsg}`);
     }
 }
 
-async function uploadFileToLitterbox(file: File, channelId: string) {
-    try {
-        const arrayBuffer = await file.arrayBuffer();
-        const fileName = file.name;
-        const fileType = file.type;
-        const fileSizeMB = file.size / (1024 * 1024);
-        const time = settings.store.litterboxTime;
+/**
+ * Catbox upload
+ */
+async function uploadFileToCatboxWithStreaming(file: File, channelId: string) {
+    console.log(`[Catbox] Starting upload for ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
 
-        const uploadResult = await Native.uploadFileToLitterboxNative(arrayBuffer, fileName, fileType, time);
+    const url = "https://catbox.moe/user/api.php";
+    const userHash = settings.store.catboxUserHash;
+
+    try {
+        console.log("[Catbox] Converting file to ArrayBuffer...");
+        const arrayBuffer = await file.arrayBuffer();
+        console.log(`[Catbox] ArrayBuffer conversion completed (${arrayBuffer.byteLength} bytes)`);
+        console.log(`[Catbox] Uploading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
+
+        const uploadResult = await Native.uploadFileToCatboxNative(
+            url,
+            arrayBuffer,
+            file.name,
+            file.type,
+            userHash
+        );
 
         if (uploadResult.startsWith("https://") || uploadResult.startsWith("http://")) {
-            const videoExtensions = [".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".wmv", ".m4v", ".mpg", ".mpeg", ".3gp", ".ogv"];
             let finalUrl = uploadResult;
 
-            if (fileSizeMB >= 150 && videoExtensions.some(ext => finalUrl.endsWith(ext))) {
-                finalUrl = `https://embeds.video/${finalUrl}`;
+            if (settings.store.autoFormat === "Yes") {
+                finalUrl = `[${file.name}](${finalUrl})`;
             }
 
+            setTimeout(() => sendTextToChat(`${finalUrl} `), 10);
+            showToast(`${file.name} Successfully Uploaded to Catbox!`, Toasts.Type.SUCCESS);
+            UploadManager.clearAll(channelId, DraftType.SlashCommand);
+        } else {
+            throw new Error(`Catbox upload failed: ${uploadResult}`);
+        }
+    } catch (nativeError) {
+        throw new Error(`Catbox streaming upload failed: ${getErrorMessage(nativeError)}`);
+    }
+}
+
+/**
+ * Litterbox upload
+ */
+async function uploadFileToLitterboxWithStreaming(file: File, channelId: string) {
+    console.log(`[Litterbox] Starting upload for ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
+
+    const time = settings.store.litterboxTime;
+
+    try {
+        console.log("[Litterbox] Converting file to ArrayBuffer...");
+        const arrayBuffer = await file.arrayBuffer();
+        console.log(`[Litterbox] ArrayBuffer conversion completed (${arrayBuffer.byteLength} bytes)`);
+        console.log(`[Litterbox] Uploading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
+
+        const uploadResult = await Native.uploadFileToLitterboxNative(
+            arrayBuffer,
+            file.name,
+            file.type,
+            time
+        );
+
+        if (uploadResult.startsWith("https://") || uploadResult.startsWith("http://")) {
+            let finalUrl = uploadResult;
+
             if (settings.store.autoFormat === "Yes") {
-                finalUrl = `[${fileName}](${finalUrl})`;
+                finalUrl = `[${file.name}](${finalUrl})`;
             }
 
             setTimeout(() => sendTextToChat(`${finalUrl}`), 10);
-            showToast("File Successfully Uploaded!", Toasts.Type.SUCCESS);
+            showToast(`${file.name} Successfully Uploaded to Litterbox!`, Toasts.Type.SUCCESS);
             UploadManager.clearAll(channelId, DraftType.SlashCommand);
         } else {
-            console.error("Unable to upload file. This is likely an issue with your network connection, firewall, or VPN.", uploadResult);
-            showToast("File Upload Failed", Toasts.Type.FAILURE);
-            sendBotMessage(channelId, { content: "**Unable to upload file.** Check the console for more info. \n-# This is likely an issue with your network connection, firewall, or VPN." });
-            UploadManager.clearAll(channelId, DraftType.SlashCommand);
+            throw new Error(`Litterbox upload failed: ${uploadResult}`);
         }
-    } catch (error) {
-        console.error("Unable to upload file. This is likely an issue with your network connection, firewall, or VPN.", error);
-        sendBotMessage(channelId, { content: "**Unable to upload file.** Check the console for more info. \n-# This is likely an issue with your network connection, firewall, or VPN." });
-        showToast("File Upload Failed", Toasts.Type.FAILURE);
-        UploadManager.clearAll(channelId, DraftType.SlashCommand);
+    } catch (nativeError) {
+        throw new Error(`Litterbox streaming upload failed: ${getErrorMessage(nativeError)}`);
     }
 }
 
-async function uploadFileCustom(file: File, channelId: string) {
+/**
+ * Custom upload
+ */
+async function uploadFileCustomWithStreaming(file: File, channelId: string) {
+    console.log(`[Custom] Starting upload for ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
+
+    const fileFormName = settings.store.customUploaderFileFormName || "file";
+    const responseType = settings.store.customUploaderResponseType;
+
+    let customArgs: Record<string, string>;
     try {
+        customArgs = JSON.parse(settings.store.customUploaderArgs || "{}");
+    } catch (e) {
+        throw new Error(`Failed to parse custom uploader arguments: ${e}`);
+    }
 
+    let customHeaders: Record<string, string>;
+    try {
+        const parsedHeaders = JSON.parse(settings.store.customUploaderHeaders || "{}");
+        customHeaders = Object.entries(parsedHeaders).reduce((acc, [key, value]) => {
+            if (key && typeof key === "string" && key.trim() !== "") {
+                acc[key] = String(value);
+            }
+            return acc;
+        }, {} as Record<string, string>);
+    } catch (e) {
+        throw new Error(`Failed to parse custom uploader headers: ${e}`);
+    }
+
+    // Handle URL path parsing - this should be just the JSON path, not a full URL
+    const urlPathString = settings.store.customUploaderURL || "";
+    let urlPath: string[] = [];
+
+    // Check if this looks like a JSON path (e.g., "url" or "data.downloadUrl") vs a full URL
+    if (urlPathString.includes("://")) {
+        // This looks like a full URL (legacy format) - extract just the path
+        try {
+            const baseUrl = new URL(urlPathString);
+            urlPath = baseUrl.pathname.split("/").filter(segment => segment);
+        } catch (e) {
+            throw new Error(`Invalid custom uploader URL: ${urlPathString}`);
+        }
+    } else {
+        // This is a JSON path (e.g., "url", "data.file_url", etc.)
+        urlPath = urlPathString.split(".").filter(segment => segment);
+    }
+
+    try {
+        console.log("[Custom] Converting file to ArrayBuffer...");
         const arrayBuffer = await file.arrayBuffer();
-        const fileName = file.name;
-        const fileType = file.type;
-
-        const fileFormName = settings.store.customUploaderFileFormName || "file[]";
-        const responseType = settings.store.customUploaderResponseType;
-
-        let customArgs: Record<string, string>;
-        try {
-            customArgs = JSON.parse(settings.store.customUploaderArgs || "{}");
-        } catch (e) {
-            console.error("Failed to parse customUploaderArgs:", e);
-            customArgs = {};
-        }
-
-        let customHeaders: Record<string, string>;
-        try {
-            const parsedHeaders = JSON.parse(settings.store.customUploaderHeaders || "{}");
-            customHeaders = Object.entries(parsedHeaders).reduce((acc, [key, value]) => {
-                if (key && typeof key === "string" && key.trim() !== "") {
-                    acc[key] = String(value);
-                } else {
-                    console.warn(`Invalid header name: "${key}". Removing it.`);
-                }
-                return acc;
-            }, {} as Record<string, string>);
-        } catch (e) {
-            console.error("Failed to parse customUploaderHeaders:", e);
-            customHeaders = {};
-        }
-
-        let baseUrl: string | URL | undefined;
-        try {
-            baseUrl = new URL(settings.store.customUploaderURL);
-        } catch (e) {
-            console.error("Invalid customUploaderURL:", settings.store.customUploaderURL, e);
-            throw new Error("Invalid base URL");
-        }
-        const urlPath = baseUrl.pathname.split("/").filter(segment => segment);
+        console.log(`[Custom] ArrayBuffer conversion completed (${arrayBuffer.byteLength} bytes)`);
+        console.log(`[Custom] Uploading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
 
         const finalUrl = await Native.uploadFileCustomNative(
             settings.store.customUploaderRequestURL,
             arrayBuffer,
-            fileName,
-            fileType,
+            file.name,
+            file.type,
             fileFormName,
             customArgs,
             customHeaders,
@@ -780,58 +902,238 @@ async function uploadFileCustom(file: File, channelId: string) {
             urlPath
         );
 
-        let constructedUrl: string;
-        try {
-            constructedUrl = new URL(finalUrl, baseUrl).href;
-        } catch (e) {
-            console.error("Failed to construct URL:", finalUrl, baseUrl, e);
-            throw new Error("Invalid final URL");
-        }
-
-        const encodedUrl = encodeURI(constructedUrl);
-        const fileExtension = `.${fileName.split(".").pop()?.toLowerCase() ?? ""}`;
-        const videoExtensions = [".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".wmv", ".m4v", ".mpg", ".mpeg", ".3gp", ".ogv"];
-        let finalUrlForChat = encodedUrl;
-        if (videoExtensions.includes(fileExtension) && file.size > 60 * 1024 * 1024) {
-            finalUrlForChat = `https://embeds.video/${encodedUrl}`;
-        }
+        let finalUrlForChat = finalUrl;
 
         if (settings.store.autoFormat === "Yes") {
-            finalUrlForChat = `[${fileName}](${finalUrlForChat})`;
+            finalUrlForChat = `[${file.name}](${finalUrlForChat})`;
         }
 
         setTimeout(() => sendTextToChat(`${finalUrlForChat} `), 10);
-        showToast("File Successfully Uploaded!", Toasts.Type.SUCCESS);
-    } catch (error) {
-        console.error("Unable to upload file:", error);
-        sendBotMessage(channelId, {
-            content: `Unable to upload file: ${error}. Check the console for more info.\n-# This could be due to network issues, firewall, VPN, or configuration errors.`
-        });
-        showToast("File Upload Failed", Toasts.Type.FAILURE);
+        showToast(`${file.name} Successfully Uploaded with Custom Uploader!`, Toasts.Type.SUCCESS);
+        UploadManager.clearAll(channelId, DraftType.SlashCommand);
+    } catch (nativeError) {
+        throw new Error(`Custom streaming upload failed: ${getErrorMessage(nativeError)}`);
     }
-
-    UploadManager.clearAll(channelId, DraftType.SlashCommand);
 }
 
+function getCompatibleUploaders(fileSize: number, primaryUploader: string): string[] {
+    const sizeMB = fileSize / (1024 * 1024);
+
+    const uploaderOrder: string[] = [];
+
+    if (sizeMB > 1024) {
+        // Files larger than 1GB - only GoFile and Custom can handle these
+        if (primaryUploader === "GoFile") {
+            uploaderOrder.push("GoFile");
+        } else if (primaryUploader === "Custom") {
+            uploaderOrder.push("Custom");
+        }
+
+        if (primaryUploader !== "GoFile") {
+            uploaderOrder.push("GoFile");
+        }
+        if (primaryUploader !== "Custom") {
+            uploaderOrder.push("Custom");
+        }
+    } else if (sizeMB > 200) {
+        // Files 200MB-1GB - Litterbox, GoFile, and Custom can handle these
+        if (primaryUploader === "Litterbox") {
+            uploaderOrder.push("Litterbox");
+        } else if (primaryUploader === "GoFile") {
+            uploaderOrder.push("GoFile");
+        } else if (primaryUploader === "Custom") {
+            uploaderOrder.push("Custom");
+        }
+
+        if (primaryUploader !== "Litterbox") {
+            uploaderOrder.push("Litterbox");
+        }
+        if (primaryUploader !== "GoFile") {
+            uploaderOrder.push("GoFile");
+        }
+        if (primaryUploader !== "Custom") {
+            uploaderOrder.push("Custom");
+        }
+    } else {
+        // Files under 200MB - all services can handle these
+        uploaderOrder.push(primaryUploader);
+
+        const fallbackOrder = ["Catbox", "Litterbox", "GoFile", "Custom"];
+        for (const uploader of fallbackOrder) {
+            if (uploader !== primaryUploader) {
+                uploaderOrder.push(uploader);
+            }
+        }
+    }
+
+    return uploaderOrder;
+}
+
+/**
+ * Main upload function with smart fallbacks
+ */
 async function uploadFile(file: File, channelId: string) {
-    const uploader = settings.store.fileUploader;
-    switch (uploader) {
-        case "GoFile":
-            await uploadFileToGofile(file, channelId);
-            break;
-        case "Catbox":
-            await uploadFileToCatbox(file, channelId);
-            break;
-        case "Litterbox":
-            await uploadFileToLitterbox(file, channelId);
-            break;
-        case "Custom":
-            await uploadFileCustom(file, channelId);
-            break;
-        default:
-            console.error("Unknown uploader:", uploader);
-            sendBotMessage(channelId, { content: "Error: Unknown uploader selected." });
-            UploadManager.clearAll(channelId, DraftType.SlashCommand);
+    const primaryUploader = settings.store.fileUploader || "Catbox";
+    const fileSizeMB = file.size / (1024 * 1024);
+
+    console.log(`[BigFileUpload] Starting upload for file: ${file.name}`);
+    console.log(`[BigFileUpload] File size: ${file.size} bytes (${fileSizeMB.toFixed(1)}MB)`);
+
+    // Get compatible uploaders based on file size
+    const uploaderOrder = getCompatibleUploaders(file.size, primaryUploader);
+    console.log(`[BigFileUpload] Uploader order: ${uploaderOrder.join(", ")}`);
+
+    // Large file warning
+    if (fileSizeMB > 300) {
+        console.warn(`[BigFileUpload] Large file warning: ${fileSizeMB.toFixed(1)}MB may take 10+ minutes to upload`);
+        showToast(`Large file detected (${fileSizeMB.toFixed(1)}MB) - this may take 10+ minutes`, Toasts.Type.MESSAGE);
+    }
+
+    let lastError: any = null;
+    let attemptCount = 0;
+
+    for (let i = 0; i < uploaderOrder.length; i++) {
+        const uploader = uploaderOrder[i];
+        attemptCount++;
+
+        try {
+            console.log(`[BigFileUpload] === Attempt ${attemptCount}: ${uploader} ===`);
+
+            if (i > 0) {
+                const previousUploader = uploaderOrder[i - 1];
+                console.log(`${previousUploader} failed. Trying fallback uploader: ${uploader}`);
+                showToast(`${previousUploader} failed. Trying ${uploader} as fallback...`, Toasts.Type.MESSAGE);
+
+                await new Promise(resolve => setTimeout(resolve, 3000));
+
+                // Clear any residual upload state
+                try {
+                    UploadManager.clearAll(channelId, DraftType.SlashCommand);
+                } catch (clearError) {
+                    console.warn("Failed to clear upload manager state:", clearError);
+                }
+            }
+
+            // Dynamic timeout based on file size and user setting
+            const timeoutSetting = settings.store.uploadTimeout || "standard";
+            let uploadTimeout;
+
+            switch (timeoutSetting) {
+                case "conservative":
+                    uploadTimeout = fileSizeMB > 100 ? 600000 : 300000; // 10 min max
+                    break;
+                case "extended":
+                    uploadTimeout = fileSizeMB > 500 ? 1800000 : fileSizeMB > 300 ? 1200000 : fileSizeMB > 100 ? 900000 : 600000; // 30 min max
+                    break;
+                case "maximum":
+                    uploadTimeout = fileSizeMB > 500 ? 3600000 : fileSizeMB > 300 ? 2400000 : fileSizeMB > 100 ? 1800000 : 1200000; // 60 min max
+                    break;
+                default:
+                    uploadTimeout = fileSizeMB > 500 ? 1200000 : fileSizeMB > 300 ? 900000 : fileSizeMB > 100 ? 600000 : 300000; // 20 min max
+            }
+
+            console.log(`[BigFileUpload] Upload timeout set to ${uploadTimeout / 60000} minutes for ${fileSizeMB.toFixed(1)}MB file (${timeoutSetting} mode)`);
+
+            // Show progress indicator for large files
+            if (fileSizeMB > 200) {
+                showToast(`Uploading ${fileSizeMB.toFixed(1)}MB to ${uploader} - this may take up to ${Math.ceil(uploadTimeout / 60000)} minutes...`, Toasts.Type.MESSAGE);
+            }
+
+            // Use streaming upload functions with timeout
+            const uploadPromise = (() => {
+                switch (uploader) {
+                    case "GoFile":
+                        return uploadFileToGofileWithStreaming(file, channelId);
+                    case "Catbox":
+                        return uploadFileToCatboxWithStreaming(file, channelId);
+                    case "Litterbox":
+                        return uploadFileToLitterboxWithStreaming(file, channelId);
+                    case "Custom":
+                        return uploadFileCustomWithStreaming(file, channelId);
+                    default:
+                        throw new Error(`Unknown uploader: ${uploader}`);
+                }
+            })();
+
+            // Add timeout handling
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => {
+                    reject(new Error(`Upload timeout after ${uploadTimeout / 60000} minutes - file may be too large for reliable upload`));
+                }, uploadTimeout);
+            });
+
+            await Promise.race([uploadPromise, timeoutPromise]);
+
+            console.log(`[BigFileUpload] ${uploader} upload completed successfully`);
+            return;
+
+        } catch (error) {
+            console.error(`[BigFileUpload] Upload failed with ${uploader}:`, error);
+            console.error(`[BigFileUpload] Error type: ${typeof error}`);
+            console.error(`[BigFileUpload] Error message: ${getErrorMessage(error)}`);
+
+            lastError = error;
+
+            // Check for specific error types
+            const errorMsg = getErrorMessage(error);
+
+            if (errorMsg.includes("timeout")) {
+                console.error(`[BigFileUpload] ${uploader} timed out - file too large for reliable upload`);
+                showToast(`${uploader} timed out (${fileSizeMB.toFixed(1)}MB too large)`, Toasts.Type.FAILURE);
+            } else if (errorMsg.includes("network") || errorMsg.includes("fetch")) {
+                console.error(`[BigFileUpload] ${uploader} network error`);
+            } else if (errorMsg.includes("CSP") || errorMsg.includes("Content Security Policy")) {
+                console.error(`[BigFileUpload] ${uploader} blocked by CSP`);
+            }
+
+            if (handleCSPError(error, uploader, channelId)) {
+                continue;
+            }
+
+            if (i === uploaderOrder.length - 1) {
+                console.error("[BigFileUpload] All uploaders failed. Last error:", lastError);
+
+                const allUploaders = ["Catbox", "Litterbox", "GoFile", "Custom"];
+                const skippedUploaders = allUploaders.filter(u => !uploaderOrder.includes(u));
+
+                let skipMessage = "";
+                if (skippedUploaders.length > 0) {
+                    skipMessage = `\nSkipped (file too large): ${skippedUploaders.join(", ")}\n`;
+                }
+
+                // Enhanced error message for timeout issues
+                let timeoutAdvice = "";
+                if (getErrorMessage(lastError).includes("timeout")) {
+                    timeoutAdvice = "\n**Upload Timeout Solutions:**\n" +
+                        "• Try uploading during off-peak hours (less network congestion)\n" +
+                        "• Use a faster/more stable internet connection\n" +
+                        "• Split large files into smaller parts (recommended: under 200MB each)\n" +
+                        "• Try a different upload service\n" +
+                        "• Consider using Discord's native file upload for very large files\n";
+                }
+
+                sendBotMessage(channelId, {
+                    content: "**All compatible upload services failed!**\n" +
+                        `File size: ${fileSizeMB.toFixed(1)}MB\n` +
+                        `Attempts made: ${attemptCount}\n` +
+                        `Tried: ${uploaderOrder.join(", ")}${skipMessage}` +
+                        `Last error: ${getErrorMessage(lastError)}\n\n` +
+                        "**Memory-efficient streaming was used** but uploads still failed.\n" +
+                        "This may be due to:\n" +
+                        "• **File too large for reliable upload over internet**\n" +
+                        "• Network timeout (uploads >400MB often fail)\n" +
+                        "• Slow/unstable internet connection\n" +
+                        "• Service overload or temporary issues\n" +
+                        timeoutAdvice +
+                        "\nCheck console for detailed error logs."
+                });
+                showToast("All streaming uploads failed", Toasts.Type.FAILURE);
+                UploadManager.clearAll(channelId, DraftType.SlashCommand);
+                return;
+            }
+
+            continue;
+        }
     }
 }
 
