@@ -4,22 +4,49 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { ApplicationCommandInputType, ApplicationCommandOptionType, sendBotMessage } from "@api/Commands";
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
 import { definePluginSettings } from "@api/Settings";
+import { Divider } from "@components/Divider";
 import { Flex } from "@components/Flex";
+import { FormSwitch } from "@components/FormSwitch";
+import { Heading } from "@components/Heading";
 import { OpenExternalIcon } from "@components/Icons";
+import { Paragraph } from "@components/Paragraph";
 import { Devs } from "@utils/constants";
 import { insertTextIntoChatInputBox, sendMessage } from "@utils/discord";
 import { Margins } from "@utils/margins";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import { findByPropsLazy } from "@webpack";
-import { Button, DraftType, Forms, Menu, PermissionsBits, PermissionStore, React, Select, SelectedChannelStore, showToast, Switch, TextInput, Toasts, UploadManager, useEffect, useState } from "@webpack/common";
+import { Button, DraftType, Menu, PermissionsBits, PermissionStore, React, Select, SelectedChannelStore, showToast, TextInput, Toasts, UploadManager, useEffect, useState } from "@webpack/common";
+
+import { LoggingLevel, pluginLogger as log, setLoggingLevelProvider } from "./logging";
+import { UploadProgressBar } from "./renderer/components/UploadProgressBar";
+import { disableDragDropOverride, enableDragDropOverride, setNitroLimitChecker, setUploadFunction } from "./renderer/dragDrop";
+import { formatFileSize, wrapWithEmbedsVideo } from "./renderer/formatting";
+import { showUploadNotification } from "./renderer/notifications";
+import { clearAndForceHide, completeAndDispatch, completeUpload as completeUploadTracking, markDispatched, startProgressPolling, startUploadBatch, stopProgressPolling } from "./renderer/progress";
 
 const Native = VencordNative.pluginHelpers.BigFileUpload as PluginNative<typeof import("./native")>;
 
-const UploadStore = findByPropsLazy("getUploads");
+// Type for upload result from native functions
+interface UploadResult {
+    success: boolean;
+    url?: string;
+    fileName?: string;
+    fileSize?: number;
+    uploadId?: string;
+    actualUploader?: string;
+    attemptedUploaders?: string[];
+    error?: string;
+}
+
 const OptionClasses = findByPropsLazy("optionName", "optionIcon", "optionLabel");
+
+// Progress tracking - use centralized module
+function generateUploadId(): string {
+    return `upload-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+}
+
 
 function createCloneableStore(initialState: any) {
     const store = { ...initialState };
@@ -51,6 +78,7 @@ function createCloneableStore(initialState: any) {
     };
 }
 
+
 // Helper function to safely get error messages
 function getErrorMessage(error: unknown): string {
     if (error instanceof Error) {
@@ -71,6 +99,71 @@ function sendTextToChat(text: string) {
     }
 }
 
+// showUploadNotification moved to ./renderer/notifications.ts for sharing with UploadProgressBar
+
+function notifyFallbackInfo(result: any) {
+    const attempted: string[] | undefined = result?.attemptedUploaders;
+    const uploader: string | undefined = result?.actualUploader;
+    if (!attempted || attempted.length <= 1 || !uploader) return;
+    const failed = attempted.slice(0, -1);
+    if (!failed.length) return;
+    const message = `Fallback used: ${failed.join(", ")} failed, uploaded via ${uploader}.`;
+    log.info(message);
+    showUploadNotification(message, Toasts.Type.MESSAGE);
+}
+
+type NativeNotification = { type: string; message: string; timestamp?: number; };
+
+function handleNativeNotification(notification: NativeNotification) {
+    const toastType = notification.type === "failure"
+        ? Toasts.Type.FAILURE
+        : notification.type === "success"
+            ? Toasts.Type.SUCCESS
+            : Toasts.Type.MESSAGE;
+
+    // Log native events to renderer console (native logs go to main process, not visible in DevTools)
+    if (notification.type === "failure") {
+        log.error(notification.message);
+    } else if (notification.type === "success") {
+        log.info(notification.message);
+    } else {
+        log.info(notification.message);
+    }
+
+    showUploadNotification(notification.message, toastType);
+}
+
+let nativeNotificationInterval: number | null = null;
+
+async function pollNativeNotifications() {
+    try {
+        const notifications = await Native.getPendingNotifications?.();
+        if (!notifications?.length) return;
+        for (const notification of notifications) {
+            handleNativeNotification(notification);
+        }
+    } catch (error) {
+        log.warn("Failed to poll native notifications:", error);
+    }
+}
+
+function startNativeNotificationPolling() {
+    if (nativeNotificationInterval !== null) return;
+    // Poll immediately once to catch queued notifications
+    void pollNativeNotifications();
+    nativeNotificationInterval = window.setInterval(() => {
+        void pollNativeNotifications();
+    }, 1500);
+}
+
+function stopNativeNotificationPolling() {
+    if (nativeNotificationInterval !== null) {
+        clearInterval(nativeNotificationInterval);
+        nativeNotificationInterval = null;
+    }
+}
+
+// Format ETA seconds into human-readable string
 function SettingsComponent(props: { setValue(v: any): void; }) {
     const initialUploader = settings.store.fileUploader || "Catbox";
     const [fileUploader, setFileUploader] = useState(initialUploader);
@@ -95,6 +188,8 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
             }
             return parsedArgs;
         })(),
+        requestMethod: settings.store.customUploaderRequestMethod || "POST",
+        bodyType: settings.store.customUploaderBodyType || "MultipartFormData",
     }));
 
     const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -114,6 +209,8 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
             updateSetting("customUploaderThumbnailURL", state.thumbnailURL);
             updateSetting("customUploaderHeaders", JSON.stringify(state.headers));
             updateSetting("customUploaderArgs", JSON.stringify(state.args));
+            updateSetting("customUploaderRequestMethod", state.requestMethod);
+            updateSetting("customUploaderBodyType", state.bodyType);
         });
 
         return unsubscribe;
@@ -123,7 +220,7 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
         if (key in settings.store) {
             (settings.store as any)[key] = value;
         } else {
-            console.error(`Invalid setting key: ${key}`);
+            log.error(`Invalid setting key: ${key}`);
         }
     }
 
@@ -133,7 +230,14 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
             const reader = new FileReader();
             reader.onload = (e: ProgressEvent<FileReader>) => {
                 try {
-                    const config = JSON.parse(e.target?.result as string);
+                    const result = e.target?.result;
+                    if (typeof result !== "string") {
+                        throw new Error("FileReader did not return a string");
+                    }
+                    const config = JSON.parse(result);
+
+                    // Detect body type from ShareX config
+                    const bodyType = config.Body === "Binary" ? "Binary" : "MultipartFormData";
 
                     customUploaderStore.set({
                         name: "",
@@ -143,7 +247,9 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                         url: "",
                         thumbnailURL: "",
                         headers: { "": "" },
-                        args: { "": "" }
+                        args: { "": "" },
+                        requestMethod: "POST",
+                        bodyType: "MultipartFormData"
                     });
 
                     customUploaderStore.set({
@@ -154,7 +260,9 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                         url: config.URL || "",
                         thumbnailURL: config.ThumbnailURL || "",
                         headers: config.Headers || { "": "" },
-                        args: config.Arguments || { "": "" }
+                        args: config.Arguments || { "": "" },
+                        requestMethod: config.RequestMethod || "POST",
+                        bodyType: bodyType
                     });
 
                     updateSetting("customUploaderName", config.Name || "");
@@ -165,14 +273,16 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                     updateSetting("customUploaderThumbnailURL", config.ThumbnailURL || "");
                     updateSetting("customUploaderHeaders", JSON.stringify(config.Headers || { "": "" }));
                     updateSetting("customUploaderArgs", JSON.stringify(config.Arguments || { "": "" }));
+                    updateSetting("customUploaderRequestMethod", config.RequestMethod || "POST");
+                    updateSetting("customUploaderBodyType", bodyType);
 
                     setFileUploader("Custom");
                     updateSetting("fileUploader", "Custom");
 
-                    showToast("ShareX config imported successfully!");
+                    showToast("ShareX config imported successfully");
                 } catch (error) {
-                    console.error("Error parsing ShareX config:", error);
-                    showToast("Error importing ShareX config. Check console for details.");
+                    log.error("Error parsing ShareX config:", error);
+                    showToast("Invalid ShareX config. Ensure it's valid JSON.");
                 }
             };
             reader.readAsText(file);
@@ -184,20 +294,20 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
     const validateCustomUploaderSettings = () => {
         if (fileUploader === "Custom") {
             if (!settings.store.customUploaderRequestURL || settings.store.customUploaderRequestURL.trim() === "") {
-                showToast("Custom uploader request URL is required.");
+                showToast("Custom uploader: Request URL is required");
                 return false;
             }
             if (!settings.store.customUploaderFileFormName || settings.store.customUploaderFileFormName.trim() === "") {
-                showToast("Custom uploader file form name is required.");
+                showToast("Custom uploader: File form name is required");
                 return false;
             }
             if (!settings.store.customUploaderURL || settings.store.customUploaderURL.trim() === "") {
-                showToast("Custom uploader URL (JSON path) is required.");
+                showToast("Custom uploader: Response URL path is required");
                 return false;
             }
             // Check for placeholder values that shouldn't be there
             if (settings.store.customUploaderURL.includes("$json:") || settings.store.customUploaderURL.includes("$")) {
-                showToast("Please replace placeholder values in custom uploader URL field.");
+                showToast("Custom uploader: Replace $json:... placeholders with actual JSON paths");
                 return false;
             }
         }
@@ -206,7 +316,7 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
 
     const handleFileUploaderChange = (v: string) => {
         if (!v || v.trim() === "") {
-            console.warn("Attempted to select empty uploader, keeping current selection");
+            log.warn("Attempted to select empty uploader, keeping current selection");
             return;
         }
 
@@ -231,13 +341,12 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
             newArgs[newKey] = value;
         }
 
-        customUploaderStore.set({ args: newArgs });
-
         // Only add empty key-value pair if all current ones are filled
         if (Object.values(newArgs).every(v => v !== "") && Object.keys(newArgs).every(k => k !== "")) {
             newArgs[""] = "";
         }
 
+        // Single set() call to avoid double-write
         customUploaderStore.set({ args: newArgs });
     };
 
@@ -255,13 +364,12 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
             newHeaders[newKey] = value;
         }
 
-        customUploaderStore.set({ headers: newHeaders });
-
         // Only add empty key-value pair if all current ones are filled
         if (Object.values(newHeaders).every(v => v !== "") && Object.keys(newHeaders).every(k => k !== "")) {
             newHeaders[""] = "";
         }
 
+        // Single set() call to avoid double-write
         customUploaderStore.set({ headers: newHeaders });
     };
 
@@ -272,258 +380,376 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
     };
 
     return (
-        <Flex flexDirection="column">
-            <Forms.FormDivider />
-            <Forms.FormSection title="Upload Limit Bypass">
-                <Forms.FormText>
-                    Select the external file uploader service to be used to bypass the upload limit.
-                    If a service fails, the plugin will automatically try other services as fallbacks.
-                </Forms.FormText>
-                <Select
-                    options={[
-                        { label: "GoFile (Temporary | Unlimited)", value: "GoFile" },
-                        { label: "Catbox (Up to 200MB)", value: "Catbox" },
-                        { label: "Litterbox (Temporary | Up to 1GB)", value: "Litterbox" },
-                        { label: "Custom Uploader", value: "Custom" },
-                    ]}
-                    className={Margins.bottom16}
-                    select={handleFileUploaderChange}
-                    isSelected={v => v === fileUploader}
-                    serialize={v => v}
-                    closeOnSelect={true}
-                    clearable={false}
-                />
-            </Forms.FormSection>
+        <Flex flexDirection="column" style={{ gap: "12px" }}>
 
-            <Forms.FormSection>
-                <Switch
-                    value={settings.store.autoSend === "Yes"}
-                    onChange={(enabled: boolean) => updateSetting("autoSend", enabled ? "Yes" : "No")}
-                    note="Whether to automatically send the links with the uploaded files to chat instead of just pasting them into the chatbox."
-                    hideBorder={true}
-                >
-                    Auto-Send Uploads To Chat
-                </Switch>
-            </Forms.FormSection>
+            {/* Main Settings */}
+            <Heading tag="h5">File Uploader Service</Heading>
+            <Paragraph className={Margins.bottom8}>
+                Choose where your files will be uploaded. If one service fails, the plugin will automatically try fallback options.
+            </Paragraph>
+            <Select
+                className={Margins.bottom20}
+                options={[
+                    { label: "Catbox (Up to 200MB, Permanent, Embeds)", value: "Catbox" },
+                    { label: "Litterbox (Up to 1GB, 3 days, Embeds)", value: "Litterbox" },
+                    { label: "0x0.st (Up to 512MB, 1 year, Embeds)", value: "0x0.st" },
+                    { label: "GoFile (Unlimited, 10 days)", value: "GoFile" },
+                    { label: "tmpfiles.org (Up to 100MB, 60 min)", value: "tmpfiles.org" },
+                    { label: "buzzheavier.com (Unlimited, 60 days)", value: "buzzheavier.com" },
+                    { label: "temp.sh (Up to 4GB, 3 days)", value: "temp.sh" },
+                    { label: "filebin.net (Unlimited, 6 days)", value: "filebin.net" },
+                    { label: "Custom Uploader", value: "Custom" },
+                ]}
+                select={handleFileUploaderChange}
+                isSelected={v => v === fileUploader}
+                serialize={v => v}
+                closeOnSelect={true}
+                clearable={false}
+            />
 
-            <Forms.FormSection>
-                <Switch
-                    value={settings.store.autoFormat === "Yes"}
-                    onChange={(enabled: boolean) => updateSetting("autoFormat", enabled ? "Yes" : "No")}
-                    note="Whether to mask the link to match the original filename."
-                    hideBorder={true}
-                >
-                    Auto-Mask Links
-                </Switch>
-            </Forms.FormSection>
+            <Divider />
 
-            <Forms.FormSection title="Upload Timeout">
-                <Forms.FormText>
-                    Configure how long to wait for large file uploads before timing out. Higher settings allow larger files but may hang longer if the upload fails.
-                </Forms.FormText>
-                <Select
-                    options={[
-                        { label: "Conservative (10 min max)", value: "conservative" },
-                        { label: "Standard (20 min max)", value: "standard" },
-                        { label: "Extended (30 min max)", value: "extended" },
-                        { label: "Maximum (60 min max)", value: "maximum" },
-                    ]}
-                    className={Margins.bottom16}
-                    select={(newValue: string) => updateSetting("uploadTimeout", newValue)}
-                    isSelected={(v: string) => v === (settings.store.uploadTimeout || "standard")}
-                    serialize={(v: string) => v}
-                    closeOnSelect={true}
-                    clearable={false}
-                />
-            </Forms.FormSection>
+            {/* Behavior Settings */}
+            <Heading tag="h5">Upload Behavior</Heading>
+            <Paragraph className={Margins.bottom8}>
+                Configure how uploaded file links are handled and displayed in Discord.
+            </Paragraph>
+            <FormSwitch
+                title="Enable Paste"
+                description="Intercept file paste events. Disable to let Discord handle pastes natively."
+                value={settings.store.pasteEnabled !== "No"}
+                onChange={(enabled: boolean) => {
+                    updateSetting("pasteEnabled", enabled ? "Yes" : "No");
+                    // Dynamically enable/disable paste handler
+                    // Always remove first to prevent listener accumulation
+                    document.removeEventListener("paste", handlePaste, { capture: true });
+                    if (enabled) {
+                        document.addEventListener("paste", handlePaste, { capture: true });
+                        log.info("Paste interception enabled");
+                    } else {
+                        log.info("Paste interception disabled");
+                    }
+                }}
+            />
+            <FormSwitch
+                title="Enable Drag and Drop"
+                description="Intercept drag and drop file uploads (up to 1GB). Disable to let Discord handle drag and drop natively."
+                value={settings.store.dragAndDropEnabled !== "No"}
+                onChange={(enabled: boolean) => {
+                    updateSetting("dragAndDropEnabled", enabled ? "Yes" : "No");
+                    // Dynamically enable/disable drag and drop
+                    if (enabled) {
+                        enableDragDropOverride();
+                        log.info("Drag-and-drop enabled");
+                    } else {
+                        disableDragDropOverride();
+                        log.info("Drag-and-drop disabled");
+                    }
+                }}
+            />
+            <FormSwitch
+                title="Respect Nitro Upload Limit"
+                description="Let Discord handle files under your Nitro limit natively. Only intercept files that exceed Discord's limit."
+                value={settings.store.respectNitroLimit === "Yes"}
+                onChange={(enabled: boolean) => updateSetting("respectNitroLimit", enabled ? "Yes" : "No")}
+                hideBorder={settings.store.respectNitroLimit === "Yes"}
+            />
+            {settings.store.respectNitroLimit === "Yes" && (
+                <>
+                    <Select
+                        className={Margins.bottom20}
+                        options={[
+                            { label: "No Nitro (10MB limit)", value: "none" },
+                            { label: "Nitro Basic (50MB limit)", value: "basic" },
+                            { label: "Nitro (500MB limit)", value: "full" },
+                        ]}
+                        placeholder="Select your Nitro tier..."
+                        select={value => updateSetting("nitroType", value)}
+                        isSelected={value => value === (settings.store.nitroType || "none")}
+                        serialize={value => value}
+                        closeOnSelect={true}
+                        clearable={false}
+                    />
+                    <Divider />
+                </>
+            )}
+            <FormSwitch
+                title="Embed Video Files"
+                description="Wrap uploaded video file links with https://embeds.video/ to embed videos that Discord might not embed. Only applies to video files (mp4, webm, mkv, etc.)."
+                value={settings.store.useEmbedsVideo === "Yes"}
+                onChange={(enabled: boolean) => updateSetting("useEmbedsVideo", enabled ? "Yes" : "No")}
+            />
+            <FormSwitch
+                title="Display Original Filename"
+                description="Format upload links as clickable text showing the original filename. Example: [vacation_video.mp4](link) instead of the raw link."
+                value={settings.store.autoFormat === "Yes"}
+                onChange={(enabled: boolean) => updateSetting("autoFormat", enabled ? "Yes" : "No")}
+            />
+            <FormSwitch
+                title="Auto-Send Links"
+                description="Automatically send uploaded file links to chat immediately after upload completes."
+                value={settings.store.autoSend === "Yes"}
+                onChange={(enabled: boolean) => updateSetting("autoSend", enabled ? "Yes" : "No")}
+            />
+            <FormSwitch
+                title="Use Notifications Instead of Toasts"
+                description="Show Vencord notifications instead of inline toasts."
+                value={settings.store.useNotifications === "Yes"}
+                onChange={(enabled: boolean) => updateSetting("useNotifications", enabled ? "Yes" : "No")}
+            />
+            <Heading tag="h5">Console Logging</Heading>
+            <Paragraph className={Margins.bottom8}>
+                Control how much information BigFileUpload prints to the console. Errors only keeps the log quiet, while verbose is useful for debugging.
+            </Paragraph>
+            <Select
+                className={Margins.bottom20}
+                options={[
+                    { label: "Errors only (quiet)", value: "errors" },
+                    { label: "Important info", value: "info" },
+                    { label: "Verbose debug", value: "debug" },
+                ]}
+                placeholder="Choose how chatty the logs should be..."
+                select={value => updateSetting("loggingLevel", value as LoggingLevel)}
+                isSelected={value => value === (settings.store.loggingLevel || "errors")}
+                serialize={value => value}
+                closeOnSelect={true}
+                clearable={false}
+            />
 
+            {/* Service-Specific Settings */}
             {fileUploader === "GoFile" && (
                 <>
-                    <Forms.FormSection title="GoFile Token (optional)">
-                        <Forms.FormText>
-                            Insert your personal GoFile account's token to save all uploads to your GoFile account.
-                        </Forms.FormText>
-                        <TextInput
-                            type="text"
-                            value={settings.store.gofileToken || ""}
-                            placeholder="Insert GoFile Token"
-                            onChange={newValue => updateSetting("gofileToken", newValue)}
-                            className={Margins.top16}
-                        />
-                    </Forms.FormSection>
+                    <Divider />
+                    <Heading tag="h5">GoFile Account (Optional)</Heading>
+                    <Paragraph className={Margins.bottom8}>
+                        Link your GoFile account to save all uploads to your personal storage.
+                    </Paragraph>
+                    <TextInput
+                        className={Margins.bottom20}
+                        type="text"
+                        value={settings.store.gofileToken || ""}
+                        placeholder="Enter your GoFile token here..."
+                        onChange={newValue => updateSetting("gofileToken", newValue)}
+                    />
                 </>
             )}
 
             {fileUploader === "Catbox" && (
                 <>
-                    <Forms.FormSection title="Catbox User hash (optional)">
-                        <Forms.FormText>
-                            Insert your personal Catbox account's hash to save all uploads to your Catbox account.
-                        </Forms.FormText>
-                        <TextInput
-                            type="text"
-                            value={settings.store.catboxUserHash || ""}
-                            placeholder="Insert User Hash"
-                            onChange={newValue => updateSetting("catboxUserHash", newValue)}
-                            className={Margins.top16}
-                        />
-                    </Forms.FormSection>
+                    <Divider />
+                    <Heading tag="h5">Catbox Account (Optional)</Heading>
+                    <Paragraph className={Margins.bottom8}>
+                        Save uploads to your Catbox account by providing your user hash.
+                    </Paragraph>
+                    <TextInput
+                        className={Margins.bottom20}
+                        type="text"
+                        value={settings.store.catboxUserHash || ""}
+                        placeholder="Enter your Catbox user hash..."
+                        onChange={newValue => updateSetting("catboxUserHash", newValue)}
+                    />
                 </>
             )}
 
             {fileUploader === "Litterbox" && (
                 <>
-                    <Forms.FormSection title="File Expiration Time">
-                        <Forms.FormText>
-                            Select how long it should take for your uploads to expire and get deleted.
-                        </Forms.FormText>
-                        <Select
-                            options={[
-                                { label: "1 hour", value: "1h" },
-                                { label: "12 hours", value: "12h" },
-                                { label: "24 hours", value: "24h" },
-                                { label: "72 hours", value: "72h" },
-                            ]}
-                            placeholder="Select Duration"
-                            className={Margins.top16}
-                            select={newValue => updateSetting("litterboxTime", newValue)}
-                            isSelected={v => v === settings.store.litterboxTime}
-                            serialize={v => v}
-                        />
-                    </Forms.FormSection>
+                    <Divider />
+                    <Heading tag="h5">File Expiration</Heading>
+                    <Paragraph className={Margins.bottom8}>
+                        Choose how long files should remain available before automatic deletion.
+                    </Paragraph>
+                    <Select
+                        className={Margins.bottom20}
+                        options={[
+                            { label: "1 hour", value: "1h" },
+                            { label: "12 hours", value: "12h" },
+                            { label: "24 hours (1 day)", value: "24h" },
+                            { label: "72 hours (3 days)", value: "72h" },
+                        ]}
+                        placeholder="Select expiration time..."
+                        select={newValue => updateSetting("litterboxTime", newValue)}
+                        isSelected={v => v === settings.store.litterboxTime}
+                        serialize={v => v}
+                    />
+                </>
+            )}
+
+            {fileUploader === "0x0.st" && (
+                <>
+                    <Divider />
+                    <Heading tag="h5">0x0.st Expiration (Optional)</Heading>
+                    <Paragraph className={Margins.bottom8}>
+                        Set expiration time using flexible format: 1y 2w 3d 4h 5m 6s (or combined like 1y2w3d4h5m6s). Examples: "7d" (7 days), "1y" (1 year), "30d" (30 days), "168h" (7 days). Maximum: 1 year. Leave empty for automatic retention based on file size: smaller files kept longer (up to 1 year), larger files shorter retention (minimum 30 days).
+                    </Paragraph>
+                    <TextInput
+                        className={Margins.bottom20}
+                        type="text"
+                        value={settings.store.zeroX0Expires || ""}
+                        placeholder="e.g., 7d or 1y2w or 168h"
+                        onChange={newValue => updateSetting("zeroX0Expires", newValue)}
+                    />
                 </>
             )}
 
             {fileUploader === "Custom" && (
                 <>
-                    <Forms.FormDivider />
-                    <Forms.FormSection title="Custom Uploader Configuration">
-                        <Forms.FormText>
-                            Configure a custom file uploader. This is the most flexible option and can work around Content Security Policy restrictions.
-                            <br /><br />
-                            <strong>CSP-Compliant Alternatives:</strong> If Catbox/Litterbox get blocked, try services that use domains like *.githubusercontent.com, *.imgur.com, or other whitelisted domains.
-                        </Forms.FormText>
-                    </Forms.FormSection>
-                    <Forms.FormSection title="Custom Uploader Name">
-                        <TextInput
-                            type="text"
-                            value={customUploaderStore.get().name}
-                            placeholder="Name"
-                            onChange={(newValue: string) => customUploaderStore.set({ name: newValue })}
-                            className={Margins.bottom16}
-                        />
-                    </Forms.FormSection>
+                    <Divider />
 
-                    <Forms.FormSection title="Request URL">
-                        <TextInput
-                            type="text"
-                            value={customUploaderStore.get().requestURL}
-                            placeholder="URL"
-                            onChange={(newValue: string) => customUploaderStore.set({ requestURL: newValue })}
-                            className={Margins.bottom16}
-                        />
-                    </Forms.FormSection>
+                    <Heading tag="h5">Custom Uploader</Heading>
+                    <Paragraph className={Margins.bottom8}>
+                        Configure your own upload service. Compatible with ShareX custom uploaders and can bypass CSP restrictions.
+                    </Paragraph>
 
-                    <Forms.FormSection title="File Form Name">
-                        <TextInput
-                            type="text"
-                            value={customUploaderStore.get().fileFormName}
-                            placeholder="Name"
-                            onChange={(newValue: string) => customUploaderStore.set({ fileFormName: newValue })}
-                            className={Margins.bottom16}
-                        />
-                    </Forms.FormSection>
+                    <Heading tag="h5">Uploader Name</Heading>
+                    <TextInput
+                        className={Margins.bottom20}
+                        type="text"
+                        value={customUploaderStore.get().name}
+                        placeholder="e.g., My Custom Uploader"
+                        onChange={(newValue: string) => customUploaderStore.set({ name: newValue })}
+                    />
 
-                    <Forms.FormSection title="Response type">
-                        <Select
-                            options={[
-                                { label: "Text", value: "Text" },
-                                { label: "JSON", value: "JSON" },
-                            ]}
-                            placeholder="Select Response Type"
-                            className={Margins.bottom16}
-                            select={(newValue: string) => customUploaderStore.set({ responseType: newValue })}
-                            isSelected={(v: string) => v === customUploaderStore.get().responseType}
-                            serialize={(v: string) => v}
-                        />
-                    </Forms.FormSection>
+                    <Heading tag="h5">API Endpoint</Heading>
+                    <TextInput
+                        className={Margins.bottom20}
+                        type="text"
+                        value={customUploaderStore.get().requestURL}
+                        placeholder="https://example.com/api/upload"
+                        onChange={(newValue: string) => customUploaderStore.set({ requestURL: newValue })}
+                    />
 
-                    <Forms.FormSection title="URL (JSON path)">
-                        <Forms.FormText>
-                            Enter the JSON path to extract the file URL from the response.<br />
-                            Examples: "url", "data.file_url", "result.download_link"<br />
-                            <strong>Do NOT enter a full URL here - just the JSON path.</strong>
-                        </Forms.FormText>
-                        <TextInput
-                            type="text"
-                            value={customUploaderStore.get().url}
-                            placeholder="url"
-                            onChange={(newValue: string) => customUploaderStore.set({ url: newValue })}
-                            className={Margins.bottom16}
-                        />
-                    </Forms.FormSection>
+                    <Heading tag="h5">File Form Field Name</Heading>
+                    <TextInput
+                        className={Margins.bottom20}
+                        type="text"
+                        value={customUploaderStore.get().fileFormName}
+                        placeholder="e.g., file, image, upload"
+                        onChange={(newValue: string) => customUploaderStore.set({ fileFormName: newValue })}
+                    />
 
-                    <Forms.FormSection title="Thumbnail URL (JSON path)">
-                        <TextInput
-                            type="text"
-                            value={customUploaderStore.get().thumbnailURL}
-                            placeholder="Thumbnail URL"
-                            onChange={(newValue: string) => customUploaderStore.set({ thumbnailURL: newValue })}
-                            className={Margins.bottom16}
-                        />
-                    </Forms.FormSection>
+                    <Heading tag="h5">HTTP Method</Heading>
+                    <Paragraph className={Margins.bottom8}>
+                        Most uploaders use POST. Use PUT for raw binary uploads (like transfer.sh style APIs).
+                    </Paragraph>
+                    <Select
+                        className={Margins.bottom20}
+                        options={[
+                            { label: "POST", value: "POST" },
+                            { label: "PUT", value: "PUT" },
+                            { label: "PATCH", value: "PATCH" },
+                        ]}
+                        placeholder="Select HTTP method..."
+                        select={(newValue: string) => customUploaderStore.set({ requestMethod: newValue })}
+                        isSelected={(v: string) => v === customUploaderStore.get().requestMethod}
+                        serialize={(v: string) => v}
+                    />
 
-                    <Forms.FormDivider />
-                    <Forms.FormTitle>Custom Uploader Arguments</Forms.FormTitle>
-                    {Object.entries(customUploaderStore.get().args).map(([key, value], index) => (
-                        <div key={index}>
-                            <TextInput
-                                type="text"
-                                value={key}
-                                placeholder="Argument Key"
-                                onChange={(newKey: string) => handleArgChange(key, newKey, value as string)}
-                                className={Margins.bottom16}
-                            />
-                            <TextInput
-                                type="text"
-                                value={value as string}
-                                placeholder="Argument Value"
-                                onChange={(newValue: string) => handleArgChange(key, key, newValue)}
-                                className={Margins.bottom16}
-                            />
-                        </div>
-                    ))}
+                    <Heading tag="h5">Body Type</Heading>
+                    <Paragraph className={Margins.bottom8}>
+                        Multipart for form uploads with fields. Binary for raw file uploads (PUT-style APIs).
+                    </Paragraph>
+                    <Select
+                        className={Margins.bottom20}
+                        options={[
+                            { label: "Multipart Form Data", value: "MultipartFormData" },
+                            { label: "Binary (raw file)", value: "Binary" },
+                        ]}
+                        placeholder="Select body type..."
+                        select={(newValue: string) => customUploaderStore.set({ bodyType: newValue })}
+                        isSelected={(v: string) => v === customUploaderStore.get().bodyType}
+                        serialize={(v: string) => v}
+                    />
 
-                    <Forms.FormDivider />
-                    <Forms.FormTitle>Headers</Forms.FormTitle>
-                    {Object.entries(customUploaderStore.get().headers).map(([key, value], index) => (
-                        <div key={index}>
-                            <TextInput
-                                type="text"
-                                value={key}
-                                placeholder="Header Key"
-                                onChange={(newKey: string) => handleHeaderChange(key, newKey, value as string)}
-                                className={Margins.bottom16}
-                            />
-                            <TextInput
-                                type="text"
-                                value={value as string}
-                                placeholder="Header Value"
-                                onChange={(newValue: string) => handleHeaderChange(key, key, newValue)}
-                                className={Margins.bottom16}
-                            />
-                        </div>
-                    ))}
+                    <Heading tag="h5">Response Format</Heading>
+                    <Select
+                        className={Margins.bottom20}
+                        options={[
+                            { label: "Plain Text", value: "Text" },
+                            { label: "JSON", value: "JSON" },
+                        ]}
+                        placeholder="Select response type..."
+                        select={(newValue: string) => customUploaderStore.set({ responseType: newValue })}
+                        isSelected={(v: string) => v === customUploaderStore.get().responseType}
+                        serialize={(v: string) => v}
+                    />
 
-                    <Forms.FormDivider />
-                    <Forms.FormTitle>Import ShareX Config</Forms.FormTitle>
+                    <Heading tag="h5">URL Path (JSON)</Heading>
+                    <Paragraph className={Margins.bottom8}>
+                        Extract URL from JSON response. Examples: "url", "data.file_url", "result.download_link" (NOT a full URL!)
+                    </Paragraph>
+                    <TextInput
+                        className={Margins.bottom20}
+                        type="text"
+                        value={customUploaderStore.get().url}
+                        placeholder="url"
+                        onChange={(newValue: string) => customUploaderStore.set({ url: newValue })}
+                    />
+
+                    <Heading tag="h5">Thumbnail Path (Optional)</Heading>
+                    <TextInput
+                        className={Margins.bottom20}
+                        type="text"
+                        value={customUploaderStore.get().thumbnailURL}
+                        placeholder="thumbnail_url"
+                        onChange={(newValue: string) => customUploaderStore.set({ thumbnailURL: newValue })}
+                    />
+
+                    <Divider />
+
+                    <Heading tag="h5">Request Arguments</Heading>
+                    <div className={Margins.bottom20}>
+                        {Object.entries(customUploaderStore.get().args).map(([key, value], index) => (
+                            <div key={index} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "8px" }}>
+                                <TextInput
+                                    type="text"
+                                    value={key}
+                                    placeholder="Key"
+                                    onChange={(newKey: string) => handleArgChange(key, newKey, value as string)}
+                                />
+                                <TextInput
+                                    type="text"
+                                    value={value as string}
+                                    placeholder="Value"
+                                    onChange={(newValue: string) => handleArgChange(key, key, newValue)}
+                                />
+                            </div>
+                        ))}
+                    </div>
+
+                    <Divider />
+
+                    <Heading tag="h5">Custom Headers</Heading>
+                    <div className={Margins.bottom20}>
+                        {Object.entries(customUploaderStore.get().headers).map(([key, value], index) => (
+                            <div key={index} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "8px" }}>
+                                <TextInput
+                                    type="text"
+                                    value={key}
+                                    placeholder="Header Key"
+                                    onChange={(newKey: string) => handleHeaderChange(key, newKey, value as string)}
+                                />
+                                <TextInput
+                                    type="text"
+                                    value={value as string}
+                                    placeholder="Header Value"
+                                    onChange={(newValue: string) => handleHeaderChange(key, key, newValue)}
+                                />
+                            </div>
+                        ))}
+                    </div>
+
+                    <Divider />
+
+                    <Heading tag="h5">ShareX Import</Heading>
+                    <Paragraph className={Margins.bottom8}>
+                        Quickly import configuration from a ShareX custom uploader file (.sxcu)
+                    </Paragraph>
                     <Button
                         onClick={triggerFileUpload}
                         color={Button.Colors.BRAND}
-                        size={Button.Sizes.XLARGE}
-                        className={Margins.bottom16}
+                        size={Button.Sizes.MEDIUM}
                     >
-                        Import
+                        Import ShareX Config
                     </Button>
                     <input
                         ref={fileInputRef}
@@ -542,9 +768,14 @@ const settings = definePluginSettings({
     fileUploader: {
         type: OptionType.SELECT,
         options: [
-            { label: "GoFile (Streaming)", value: "GoFile" },
-            { label: "Catbox (Up to 200MB)", value: "Catbox", default: true },
-            { label: "Litterbox (Temporary | Up to 1GB)", value: "Litterbox" },
+            { label: "Catbox (Up to 200MB, Permanent)", value: "Catbox", default: true },
+            { label: "Litterbox (Up to 1GB, 3 days)", value: "Litterbox" },
+            { label: "0x0.st (Up to 512MB, Up to 1 year)", value: "0x0.st" },
+            { label: "tmpfiles.org (100MB, 60 min)", value: "tmpfiles.org" },
+            { label: "GoFile (Unlimited, +10 days)", value: "GoFile" },
+            { label: "buzzheavier.com (Unlimited, +60 days)", value: "buzzheavier.com" },
+            { label: "temp.sh (Up to 4GB, 3 days)", value: "temp.sh" },
+            { label: "filebin.net (Unlimited, 6 days)", value: "filebin.net" },
             { label: "Custom Uploader", value: "Custom" },
         ],
         description: "Select the file uploader service",
@@ -594,12 +825,18 @@ const settings = definePluginSettings({
     litterboxTime: {
         type: OptionType.SELECT,
         options: [
-            { label: "1 hour", value: "1h", default: true },
+            { label: "1 hour", value: "1h" },
             { label: "12 hours", value: "12h" },
             { label: "24 hours", value: "24h" },
-            { label: "72 hours", value: "72h" },
+            { label: "72 hours (3 days)", value: "72h", default: true },
         ],
         description: "Duration for files on Litterbox before they are deleted",
+        hidden: true
+    },
+    zeroX0Expires: {
+        type: OptionType.STRING,
+        default: "1y",
+        description: "Expiration for 0x0.st uploads (optional, e.g., '7d', '1y', '1y2w3d4h5m6s')",
         hidden: true
     },
     customUploaderName: {
@@ -653,6 +890,96 @@ const settings = definePluginSettings({
         description: "Arguments for the custom uploader (JSON string)",
         hidden: true
     },
+    customUploaderRequestMethod: {
+        type: OptionType.SELECT,
+        options: [
+            { label: "POST", value: "POST", default: true },
+            { label: "PUT", value: "PUT" },
+            { label: "PATCH", value: "PATCH" },
+        ],
+        description: "HTTP method for the custom uploader",
+        hidden: true
+    },
+    customUploaderBodyType: {
+        type: OptionType.SELECT,
+        options: [
+            { label: "Multipart Form Data", value: "MultipartFormData", default: true },
+            { label: "Binary (raw file)", value: "Binary" },
+        ],
+        description: "Request body type for the custom uploader",
+        hidden: true
+    },
+    useNotifications: {
+        type: OptionType.SELECT,
+        options: [
+            { label: "Yes", value: "Yes" },
+            { label: "No", value: "No", default: true },
+        ],
+        description: "Use desktop notifications instead of toasts",
+        hidden: true
+    },
+    useEmbedsVideo: {
+        type: OptionType.SELECT,
+        options: [
+            { label: "Yes", value: "Yes", default: true },
+            { label: "No", value: "No" },
+        ],
+        description: "Wrap uploaded video URLs with embeds.video for better embedding",
+        hidden: true
+    },
+    dragAndDropEnabled: {
+        type: OptionType.SELECT,
+        options: [
+            { label: "Yes", value: "Yes", default: true },
+            { label: "No", value: "No" },
+        ],
+        description: "Enable drag and drop file uploads",
+        hidden: true
+    },
+    pasteEnabled: {
+        type: OptionType.SELECT,
+        options: [
+            { label: "Yes", value: "Yes", default: true },
+            { label: "No", value: "No" },
+        ],
+        description: "Enable paste file uploads",
+        hidden: true
+    },
+    respectNitroLimit: {
+        type: OptionType.SELECT,
+        options: [
+            { label: "Yes", value: "Yes", default: true },
+            { label: "No", value: "No" },
+        ],
+        description: "Use Discord native upload for files under Nitro limit",
+        hidden: true
+    },
+    nitroType: {
+        type: OptionType.SELECT,
+        options: [
+            { label: "None (10MB)", value: "none", default: true },
+            { label: "Nitro Basic (50MB)", value: "basic" },
+            { label: "Nitro (500MB)", value: "full" },
+        ],
+        description: "Your Discord Nitro subscription tier",
+        hidden: true
+    },
+    notificationTimeout: {
+        type: OptionType.STRING,
+        default: "5000",
+        description: "Notification auto-dismiss timeout in milliseconds",
+        hidden: true
+    },
+    loggingLevel: {
+        type: OptionType.SELECT,
+        options: [
+            { label: "Errors only", value: "errors", default: true },
+            { label: "Important info", value: "info" },
+            { label: "Verbose debug", value: "debug" },
+        ],
+        description: "Control how much BigFileUpload logs to the console",
+        hidden: true
+    },
     customSettings: {
         type: OptionType.COMPONENT,
         component: SettingsComponent,
@@ -664,500 +991,358 @@ const settings = definePluginSettings({
     customUploaderHeaders?: Record<string, string>;
 }>();
 
-function handleCSPError(error: unknown, serviceName: string, channelId: string) {
-    const errorMessage = getErrorMessage(error);
-    const isCSPError = errorMessage.includes("Content Security Policy") ||
-        errorMessage.includes("CSP") ||
-        errorMessage.includes("violates the following Content Security Policy directive");
+setLoggingLevelProvider(() => {
+    try {
+        return (settings.store.loggingLevel as LoggingLevel) ?? "errors";
+    } catch {
+        // Settings store isn't ready yet (plugin still initializing)
+        return "errors";
+    }
+});
 
-    if (isCSPError) {
-        console.error(`CSP blocking ${serviceName}:`, error);
-        sendBotMessage(channelId, {
-            content: `**${serviceName} blocked by Content Security Policy**\n` +
-                `Discord's security policy is preventing uploads to ${serviceName}.\n\n` +
-                "**Solutions:**\n" +
-                "• Try using the **Custom uploader** with a CSP-compliant service\n" +
-                "• Switch to GoFile which has CSP workarounds\n" +
-                "• Check plugin settings for alternative upload services\n\n" +
-                "-# This is a Discord security restriction, not a plugin issue."
+// Drag-and-drop / Paste size limit (1GB - safe for most systems)
+const DRAG_DROP_MAX_SIZE = 1024 * 1024 * 1024; // 1GB in bytes
+
+// Nitro upload limits
+const NITRO_LIMITS = {
+    none: 10 * 1024 * 1024, // 10MB for no Nitro
+    basic: 50 * 1024 * 1024, // 50MB for Nitro Basic
+    full: 500 * 1024 * 1024, // 500MB for full Nitro
+} as const;
+
+/**
+ * Get the user's Discord upload limit based on their Nitro tier
+ */
+function getNitroLimit(): number {
+    const nitroType = settings.store.nitroType || "none";
+    return NITRO_LIMITS[nitroType as keyof typeof NITRO_LIMITS] || NITRO_LIMITS.none;
+}
+
+/**
+ * Check if a file should use Discord's native upload (under Nitro limit)
+ */
+function shouldUseNativeUpload(fileSize: number): boolean {
+    if (settings.store.respectNitroLimit !== "Yes") {
+        return false; // User wants BigFileUpload to handle everything
+    }
+    return fileSize <= getNitroLimit();
+}
+
+// Uploaders that don't support EXE files
+const EXE_BLOCKED_UPLOADERS = ["Catbox", "Litterbox", "0x0.st"];
+const EXE_FALLBACK_UPLOADER = "GoFile";
+
+/**
+ * Check if a file is an EXE based on extension
+ */
+function isExeFile(fileName: string): boolean {
+    return fileName.toLowerCase().endsWith(".exe");
+}
+
+/**
+ * Get the effective uploader, skipping blocked services for EXE files
+ */
+function getEffectiveUploader(fileName: string, selectedUploader: string): string {
+    if (isExeFile(fileName) && EXE_BLOCKED_UPLOADERS.includes(selectedUploader)) {
+        log.info(`${selectedUploader} doesn't support EXE files, using ${EXE_FALLBACK_UPLOADER} instead`);
+        return EXE_FALLBACK_UPLOADER;
+    }
+    return selectedUploader;
+}
+
+/**
+ * SECURE: Handle drag-and-drop / paste uploads for small files
+ * Renderer sends buffer to main process, no file paths exposed
+ */
+async function handleSmallFileUpload(file: File, skipBatchStart = false) {
+    try {
+        const channelId = SelectedChannelStore.getChannelId();
+        log.debug(`handleSmallFileUpload invoked for ${file.name}`, {
+            channelId,
+            skipBatchStart,
+            fileSize: formatFileSize(file.size)
         });
-        showToast(`${serviceName} blocked by CSP - Try Custom uploader`, Toasts.Type.FAILURE);
-        return true;
-    }
-    return false;
-}
 
-async function resolveFile(options: any[], ctx: any): Promise<File | null> {
-    for (const opt of options) {
-        if (opt.name === "file") {
-            const upload = UploadStore.getUpload(ctx.channel.id, opt.name, DraftType.SlashCommand);
-            return upload.item.file;
-        }
-    }
-    return null;
-}
-
-/**
- * GoFile upload
- */
-async function uploadFileToGofileWithStreaming(file: File, channelId: string) {
-    console.log(`[GoFile] Starting upload for ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
-
-    const servers = [
-        "store1", "store2", "store3", "store4", "store5", "store6", "store7", "store8", "store9", "store10",
-        "store-eu-par-1", "store-eu-par-2", "store-eu-par-3", "store-eu-par-4",
-        "store-na-phx-1"
-    ];
-    const server = servers[Math.floor(Math.random() * servers.length)];
-
-    try {
-        const startTime = Date.now();
-
-        console.log("[GoFile] Converting file to ArrayBuffer...");
-        const arrayBuffer = await file.arrayBuffer();
-        console.log(`[GoFile] ArrayBuffer conversion completed (${arrayBuffer.byteLength} bytes)`);
-        console.log(`[GoFile] Uploading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
-
-        const uploadResult = await Native.uploadFileToGofileNative(
-            `https://${server}.gofile.io/uploadFile`,
-            arrayBuffer,
-            file.name,
-            file.type,
-            settings.store.gofileToken
-        );
-
-        const uploadTime = Date.now() - startTime;
-        console.log(`[GoFile] Upload completed in ${uploadTime}ms`);
-
-        if ((uploadResult as any).status === "ok") {
-            const { downloadPage } = (uploadResult as any).data;
-            let finalUrl = downloadPage;
-
-            if (settings.store.autoFormat === "Yes") {
-                finalUrl = `[${file.name}](${finalUrl})`;
-            }
-
-            setTimeout(() => sendTextToChat(`${finalUrl} `), 10);
-            showToast(`${file.name} Successfully Uploaded to GoFile!`, Toasts.Type.SUCCESS);
-            UploadManager.clearAll(channelId, DraftType.SlashCommand);
-        } else {
-            throw new Error(`GoFile upload failed: ${JSON.stringify(uploadResult)}`);
-        }
-    } catch (nativeError) {
-        const errorMsg = getErrorMessage(nativeError);
-        const sizeMB = file.size / (1024 * 1024);
-
-        if (errorMsg.includes("413") || errorMsg.includes("payload too large")) {
-            throw new Error(`GoFile rejected file: too large (${sizeMB.toFixed(1)}MB)`);
-        } else if (errorMsg.includes("timeout") || errorMsg.includes("network")) {
-            throw new Error(`GoFile upload timeout (${sizeMB.toFixed(1)}MB file may be too large)`);
-        }
-
-        throw new Error(`GoFile streaming upload failed: ${errorMsg}`);
-    }
-}
-
-/**
- * Catbox upload
- */
-async function uploadFileToCatboxWithStreaming(file: File, channelId: string) {
-    console.log(`[Catbox] Starting upload for ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
-
-    const url = "https://catbox.moe/user/api.php";
-    const userHash = settings.store.catboxUserHash;
-
-    try {
-        console.log("[Catbox] Converting file to ArrayBuffer...");
-        const arrayBuffer = await file.arrayBuffer();
-        console.log(`[Catbox] ArrayBuffer conversion completed (${arrayBuffer.byteLength} bytes)`);
-        console.log(`[Catbox] Uploading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
-
-        const uploadResult = await Native.uploadFileToCatboxNative(
-            url,
-            arrayBuffer,
-            file.name,
-            file.type,
-            userHash
-        );
-
-        if (uploadResult.startsWith("https://") || uploadResult.startsWith("http://")) {
-            let finalUrl = uploadResult;
-
-            if (settings.store.autoFormat === "Yes") {
-                finalUrl = `[${file.name}](${finalUrl})`;
-            }
-
-            setTimeout(() => sendTextToChat(`${finalUrl} `), 10);
-            showToast(`${file.name} Successfully Uploaded to Catbox!`, Toasts.Type.SUCCESS);
-            UploadManager.clearAll(channelId, DraftType.SlashCommand);
-        } else {
-            throw new Error(`Catbox upload failed: ${uploadResult}`);
-        }
-    } catch (nativeError) {
-        throw new Error(`Catbox streaming upload failed: ${getErrorMessage(nativeError)}`);
-    }
-}
-
-/**
- * Litterbox upload
- */
-async function uploadFileToLitterboxWithStreaming(file: File, channelId: string) {
-    console.log(`[Litterbox] Starting upload for ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
-
-    const time = settings.store.litterboxTime;
-
-    try {
-        console.log("[Litterbox] Converting file to ArrayBuffer...");
-        const arrayBuffer = await file.arrayBuffer();
-        console.log(`[Litterbox] ArrayBuffer conversion completed (${arrayBuffer.byteLength} bytes)`);
-        console.log(`[Litterbox] Uploading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
-
-        const uploadResult = await Native.uploadFileToLitterboxNative(
-            arrayBuffer,
-            file.name,
-            file.type,
-            time
-        );
-
-        if (uploadResult.startsWith("https://") || uploadResult.startsWith("http://")) {
-            let finalUrl = uploadResult;
-
-            if (settings.store.autoFormat === "Yes") {
-                finalUrl = `[${file.name}](${finalUrl})`;
-            }
-
-            setTimeout(() => sendTextToChat(`${finalUrl}`), 10);
-            showToast(`${file.name} Successfully Uploaded to Litterbox!`, Toasts.Type.SUCCESS);
-            UploadManager.clearAll(channelId, DraftType.SlashCommand);
-        } else {
-            throw new Error(`Litterbox upload failed: ${uploadResult}`);
-        }
-    } catch (nativeError) {
-        throw new Error(`Litterbox streaming upload failed: ${getErrorMessage(nativeError)}`);
-    }
-}
-
-/**
- * Custom upload
- */
-async function uploadFileCustomWithStreaming(file: File, channelId: string) {
-    console.log(`[Custom] Starting upload for ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
-
-    const fileFormName = settings.store.customUploaderFileFormName || "file";
-    const responseType = settings.store.customUploaderResponseType;
-
-    let customArgs: Record<string, string>;
-    try {
-        customArgs = JSON.parse(settings.store.customUploaderArgs || "{}");
-    } catch (e) {
-        throw new Error(`Failed to parse custom uploader arguments: ${e}`);
-    }
-
-    let customHeaders: Record<string, string>;
-    try {
-        const parsedHeaders = JSON.parse(settings.store.customUploaderHeaders || "{}");
-        customHeaders = Object.entries(parsedHeaders).reduce((acc, [key, value]) => {
-            if (key && typeof key === "string" && key.trim() !== "") {
-                acc[key] = String(value);
-            }
-            return acc;
-        }, {} as Record<string, string>);
-    } catch (e) {
-        throw new Error(`Failed to parse custom uploader headers: ${e}`);
-    }
-
-    // Handle URL path parsing - this should be just the JSON path, not a full URL
-    const urlPathString = settings.store.customUploaderURL || "";
-    let urlPath: string[] = [];
-
-    // Check if this looks like a JSON path (e.g., "url" or "data.downloadUrl") vs a full URL
-    if (urlPathString.includes("://")) {
-        // This looks like a full URL (legacy format) - extract just the path
-        try {
-            const baseUrl = new URL(urlPathString);
-            urlPath = baseUrl.pathname.split("/").filter(segment => segment);
-        } catch (e) {
-            throw new Error(`Invalid custom uploader URL: ${urlPathString}`);
-        }
-    } else {
-        // This is a JSON path (e.g., "url", "data.file_url", etc.)
-        urlPath = urlPathString.split(".").filter(segment => segment);
-    }
-
-    try {
-        console.log("[Custom] Converting file to ArrayBuffer...");
-        const arrayBuffer = await file.arrayBuffer();
-        console.log(`[Custom] ArrayBuffer conversion completed (${arrayBuffer.byteLength} bytes)`);
-        console.log(`[Custom] Uploading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
-
-        const finalUrl = await Native.uploadFileCustomNative(
-            settings.store.customUploaderRequestURL,
-            arrayBuffer,
-            file.name,
-            file.type,
-            fileFormName,
-            customArgs,
-            customHeaders,
-            responseType,
-            urlPath
-        );
-
-        let finalUrlForChat = finalUrl;
-
-        if (settings.store.autoFormat === "Yes") {
-            finalUrlForChat = `[${file.name}](${finalUrlForChat})`;
-        }
-
-        setTimeout(() => sendTextToChat(`${finalUrlForChat} `), 10);
-        showToast(`${file.name} Successfully Uploaded with Custom Uploader!`, Toasts.Type.SUCCESS);
-        UploadManager.clearAll(channelId, DraftType.SlashCommand);
-    } catch (nativeError) {
-        throw new Error(`Custom streaming upload failed: ${getErrorMessage(nativeError)}`);
-    }
-}
-
-function getCompatibleUploaders(fileSize: number, primaryUploader: string): string[] {
-    const sizeMB = fileSize / (1024 * 1024);
-
-    const uploaderOrder: string[] = [];
-
-    if (sizeMB > 1024) {
-        // Files larger than 1GB - only GoFile and Custom can handle these
-        if (primaryUploader === "GoFile") {
-            uploaderOrder.push("GoFile");
-        } else if (primaryUploader === "Custom") {
-            uploaderOrder.push("Custom");
-        }
-
-        if (primaryUploader !== "GoFile") {
-            uploaderOrder.push("GoFile");
-        }
-        if (primaryUploader !== "Custom") {
-            uploaderOrder.push("Custom");
-        }
-    } else if (sizeMB > 200) {
-        // Files 200MB-1GB - Litterbox, GoFile, and Custom can handle these
-        if (primaryUploader === "Litterbox") {
-            uploaderOrder.push("Litterbox");
-        } else if (primaryUploader === "GoFile") {
-            uploaderOrder.push("GoFile");
-        } else if (primaryUploader === "Custom") {
-            uploaderOrder.push("Custom");
-        }
-
-        if (primaryUploader !== "Litterbox") {
-            uploaderOrder.push("Litterbox");
-        }
-        if (primaryUploader !== "GoFile") {
-            uploaderOrder.push("GoFile");
-        }
-        if (primaryUploader !== "Custom") {
-            uploaderOrder.push("Custom");
-        }
-    } else {
-        // Files under 200MB - all services can handle these
-        uploaderOrder.push(primaryUploader);
-
-        const fallbackOrder = ["Catbox", "Litterbox", "GoFile", "Custom"];
-        for (const uploader of fallbackOrder) {
-            if (uploader !== primaryUploader) {
-                uploaderOrder.push(uploader);
-            }
-        }
-    }
-
-    return uploaderOrder;
-}
-
-/**
- * Main upload function with smart fallbacks
- */
-async function uploadFile(file: File, channelId: string) {
-    const primaryUploader = settings.store.fileUploader || "Catbox";
-    const fileSizeMB = file.size / (1024 * 1024);
-
-    console.log(`[BigFileUpload] Starting upload for file: ${file.name}`);
-    console.log(`[BigFileUpload] File size: ${file.size} bytes (${fileSizeMB.toFixed(1)}MB)`);
-
-    // Get compatible uploaders based on file size
-    const uploaderOrder = getCompatibleUploaders(file.size, primaryUploader);
-    console.log(`[BigFileUpload] Uploader order: ${uploaderOrder.join(", ")}`);
-
-    // Large file warning
-    if (fileSizeMB > 300) {
-        console.warn(`[BigFileUpload] Large file warning: ${fileSizeMB.toFixed(1)}MB may take 10+ minutes to upload`);
-        showToast(`Large file detected (${fileSizeMB.toFixed(1)}MB) - this may take 10+ minutes`, Toasts.Type.MESSAGE);
-    }
-
-    let lastError: any = null;
-    let attemptCount = 0;
-
-    for (let i = 0; i < uploaderOrder.length; i++) {
-        const uploader = uploaderOrder[i];
-        attemptCount++;
-
-        try {
-            console.log(`[BigFileUpload] === Attempt ${attemptCount}: ${uploader} ===`);
-
-            if (i > 0) {
-                const previousUploader = uploaderOrder[i - 1];
-                console.log(`${previousUploader} failed. Trying fallback uploader: ${uploader}`);
-                showToast(`${previousUploader} failed. Trying ${uploader} as fallback...`, Toasts.Type.MESSAGE);
-
-                await new Promise(resolve => setTimeout(resolve, 3000));
-
-                // Clear any residual upload state
-                try {
-                    UploadManager.clearAll(channelId, DraftType.SlashCommand);
-                } catch (clearError) {
-                    console.warn("Failed to clear upload manager state:", clearError);
-                }
-            }
-
-            // Dynamic timeout based on file size and user setting
-            const timeoutSetting = settings.store.uploadTimeout || "standard";
-            let uploadTimeout;
-
-            switch (timeoutSetting) {
-                case "conservative":
-                    uploadTimeout = fileSizeMB > 100 ? 600000 : 300000; // 10 min max
-                    break;
-                case "extended":
-                    uploadTimeout = fileSizeMB > 500 ? 1800000 : fileSizeMB > 300 ? 1200000 : fileSizeMB > 100 ? 900000 : 600000; // 30 min max
-                    break;
-                case "maximum":
-                    uploadTimeout = fileSizeMB > 500 ? 3600000 : fileSizeMB > 300 ? 2400000 : fileSizeMB > 100 ? 1800000 : 1200000; // 60 min max
-                    break;
-                default:
-                    uploadTimeout = fileSizeMB > 500 ? 1200000 : fileSizeMB > 300 ? 900000 : fileSizeMB > 100 ? 600000 : 300000; // 20 min max
-            }
-
-            console.log(`[BigFileUpload] Upload timeout set to ${uploadTimeout / 60000} minutes for ${fileSizeMB.toFixed(1)}MB file (${timeoutSetting} mode)`);
-
-            // Show progress indicator for large files
-            if (fileSizeMB > 200) {
-                showToast(`Uploading ${fileSizeMB.toFixed(1)}MB to ${uploader} - this may take up to ${Math.ceil(uploadTimeout / 60000)} minutes...`, Toasts.Type.MESSAGE);
-            }
-
-            // Use streaming upload functions with timeout
-            const uploadPromise = (() => {
-                switch (uploader) {
-                    case "GoFile":
-                        return uploadFileToGofileWithStreaming(file, channelId);
-                    case "Catbox":
-                        return uploadFileToCatboxWithStreaming(file, channelId);
-                    case "Litterbox":
-                        return uploadFileToLitterboxWithStreaming(file, channelId);
-                    case "Custom":
-                        return uploadFileCustomWithStreaming(file, channelId);
-                    default:
-                        throw new Error(`Unknown uploader: ${uploader}`);
-                }
-            })();
-
-            // Add timeout handling
-            const timeoutPromise = new Promise((_, reject) => {
-                setTimeout(() => {
-                    reject(new Error(`Upload timeout after ${uploadTimeout / 60000} minutes - file may be too large for reliable upload`));
-                }, uploadTimeout);
-            });
-
-            await Promise.race([uploadPromise, timeoutPromise]);
-
-            console.log(`[BigFileUpload] ${uploader} upload completed successfully`);
+        // Check size limit for drag-and-drop/paste
+        if (file.size > DRAG_DROP_MAX_SIZE) {
+            showUploadNotification(
+                `File too large (${formatFileSize(file.size)}). Drag-and-drop limit is ${formatFileSize(DRAG_DROP_MAX_SIZE)}. Use the Upload button for larger files.`,
+                Toasts.Type.FAILURE
+            );
             return;
+        }
 
-        } catch (error) {
-            console.error(`[BigFileUpload] Upload failed with ${uploader}:`, error);
-            console.error(`[BigFileUpload] Error type: ${typeof error}`);
-            console.error(`[BigFileUpload] Error message: ${getErrorMessage(error)}`);
+        // Start progress tracking for single file upload (unless called from paste handler which already started batch)
+        if (!skipBatchStart) {
+            startUploadBatch(1);
+            log.debug("Started upload batch for single file from drag/paste handler");
+        }
 
-            lastError = error;
+        // Load file into buffer (safe - size limited)
+        const buffer = await file.arrayBuffer();
+        log.debug(`Loaded ${buffer.byteLength} bytes into memory for ${file.name}`);
 
-            // Check for specific error types
-            const errorMsg = getErrorMessage(error);
+        // Get MIME type from File object (important for upload services to recognize file format)
+        const mimeType = file.type || "application/octet-stream";
+        log.debug(`File MIME type: ${mimeType}`);
 
-            if (errorMsg.includes("timeout")) {
-                console.error(`[BigFileUpload] ${uploader} timed out - file too large for reliable upload`);
-                showToast(`${uploader} timed out (${fileSizeMB.toFixed(1)}MB too large)`, Toasts.Type.FAILURE);
-            } else if (errorMsg.includes("network") || errorMsg.includes("fetch")) {
-                console.error(`[BigFileUpload] ${uploader} network error`);
-            } else if (errorMsg.includes("CSP") || errorMsg.includes("Content Security Policy")) {
-                console.error(`[BigFileUpload] ${uploader} blocked by CSP`);
+        // Get the selected uploader, with EXE file handling
+        const selectedUploader = settings.store.fileUploader || "Catbox";
+        const effectiveUploader = getEffectiveUploader(file.name, selectedUploader);
+
+        // Log upload start (Important Info level)
+        log.info(`Uploading ${file.name} (${formatFileSize(file.size)}) via ${effectiveUploader}`);
+
+        // Secure upload: send buffer to main process (no file paths exposed)
+        log.debug("Calling Native.uploadFileBuffer...");
+        const result = await Native.uploadFileBuffer(
+            buffer,
+            file.name,
+            mimeType,
+            {
+                fileUploader: effectiveUploader,
+                gofileToken: settings.store.gofileToken,
+                catboxUserHash: settings.store.catboxUserHash,
+                litterboxTime: settings.store.litterboxTime,
+                zeroX0Expires: settings.store.zeroX0Expires,
+                autoFormat: settings.store.autoFormat,
+                customUploaderRequestURL: settings.store.customUploaderRequestURL,
+                customUploaderFileFormName: settings.store.customUploaderFileFormName,
+                customUploaderResponseType: settings.store.customUploaderResponseType,
+                customUploaderURL: settings.store.customUploaderURL,
+                customUploaderArgs: settings.store.customUploaderArgs,
+                customUploaderHeaders: settings.store.customUploaderHeaders,
+                customUploaderRequestMethod: settings.store.customUploaderRequestMethod,
+                customUploaderBodyType: settings.store.customUploaderBodyType,
+                loggingLevel: (settings.store.loggingLevel as LoggingLevel) ?? "errors"
             }
+        );
 
-            if (handleCSPError(error, uploader, channelId)) {
-                continue;
-            }
+        const typedResult = result as UploadResult;
+        log.debug("Upload result", {
+            success: typedResult.success,
+            uploadId: typedResult.uploadId,
+            actualUploader: typedResult.actualUploader,
+            attemptedUploaders: typedResult.attemptedUploaders,
+            url: typedResult.url ? "(present)" : "(missing)"
+        });
 
-            if (i === uploaderOrder.length - 1) {
-                console.error("[BigFileUpload] All uploaders failed. Last error:", lastError);
-
-                const allUploaders = ["Catbox", "Litterbox", "GoFile", "Custom"];
-                const skippedUploaders = allUploaders.filter(u => !uploaderOrder.includes(u));
-
-                let skipMessage = "";
-                if (skippedUploaders.length > 0) {
-                    skipMessage = `\nSkipped (file too large): ${skippedUploaders.join(", ")}\n`;
-                }
-
-                // Enhanced error message for timeout issues
-                let timeoutAdvice = "";
-                if (getErrorMessage(lastError).includes("timeout")) {
-                    timeoutAdvice = "\n**Upload Timeout Solutions:**\n" +
-                        "• Try uploading during off-peak hours (less network congestion)\n" +
-                        "• Use a faster/more stable internet connection\n" +
-                        "• Split large files into smaller parts (recommended: under 200MB each)\n" +
-                        "• Try a different upload service\n" +
-                        "• Consider using Discord's native file upload for very large files\n";
-                }
-
-                sendBotMessage(channelId, {
-                    content: "**All compatible upload services failed!**\n" +
-                        `File size: ${fileSizeMB.toFixed(1)}MB\n` +
-                        `Attempts made: ${attemptCount}\n` +
-                        `Tried: ${uploaderOrder.join(", ")}${skipMessage}` +
-                        `Last error: ${getErrorMessage(lastError)}\n\n` +
-                        "**Memory-efficient streaming was used** but uploads still failed.\n" +
-                        "This may be due to:\n" +
-                        "• **File too large for reliable upload over internet**\n" +
-                        "• Network timeout (uploads >400MB often fail)\n" +
-                        "• Slow/unstable internet connection\n" +
-                        "• Service overload or temporary issues\n" +
-                        timeoutAdvice +
-                        "\nCheck console for detailed error logs."
-                });
-                showToast("All streaming uploads failed", Toasts.Type.FAILURE);
+        // Ensure Discord's native upload UI is cleared so the progress bar disappears
+        if (channelId) {
+            try {
+                UploadManager.clearAll(channelId, DraftType.ChannelMessage);
                 UploadManager.clearAll(channelId, DraftType.SlashCommand);
+            } catch (clearError) {
+                log.warn("Failed to clear native upload UI:", clearError);
+            }
+        }
+
+        if (!result.success) {
+            // Complete tracking even on failure (to clear progress bar)
+            if (result.uploadId) {
+                completeUploadTracking(result.uploadId);
+            } else {
+                clearAndForceHide();
+            }
+            // Don't show error notification if upload was cancelled
+            if (result.error !== "Upload cancelled by user") {
+                showUploadNotification(`Upload failed: ${result.error}`, Toasts.Type.FAILURE);
+            }
+            return;
+        }
+
+        // Send URL to chat
+        if (result.url) {
+            const finalUrl = wrapWithEmbedsVideo(
+                result.url,
+                result.fileName || "",
+                settings.store.useEmbedsVideo === "Yes"
+            );
+
+            // Send text first, then atomically complete + dispatch to prevent race condition
+            sendTextToChat(`${finalUrl} `);
+
+            // Use atomic completeAndDispatch to set both isComplete and isDispatched together
+            // This prevents race conditions where one state is set but not the other
+            if (result.uploadId) {
+                log.debug("Using atomic completeAndDispatch for ID:", result.uploadId);
+                completeAndDispatch(result.uploadId);
+            } else {
+                log.warn("No uploadId in result, using markDispatched fallback");
+                markDispatched();
+                clearAndForceHide();
+            }
+
+            // Show success notification with actual uploader info
+            const { actualUploader, attemptedUploaders } = typedResult;
+            log.debug(`Checking notification: actualUploader=${actualUploader}, selectedUploader=${selectedUploader}, match=${actualUploader === selectedUploader}`);
+
+            if (actualUploader && actualUploader !== selectedUploader) {
+                // Fallback was used - notify user
+                const failedUploaders = attemptedUploaders ? attemptedUploaders.slice(0, -1).join(", ") : selectedUploader;
+                const notificationMsg = `${result.fileName} uploaded via ${actualUploader} (fallback from ${failedUploaders})`;
+                log.debug(`Showing fallback notification: ${notificationMsg}`);
+                showUploadNotification(notificationMsg, Toasts.Type.SUCCESS);
+            } else {
+                log.debug("Showing normal success notification");
+                showUploadNotification(`${result.fileName} uploaded successfully`, Toasts.Type.SUCCESS);
+                notifyFallbackInfo(result);
+            }
+
+            // Ensure progress is cleared even if uploadId wasn't tracked earlier
+            // This is a fallback to ensure the progress bar always hides on success
+            if (!result.uploadId) {
+                log.warn("No uploadId on success, forcing progress clear");
+                clearAndForceHide();
+                // Also clear native side progress
+                await Native.clearProgress();
+            }
+        } else {
+            showUploadNotification("Upload succeeded but no URL was returned. Try a different uploader.", Toasts.Type.FAILURE);
+            clearAndForceHide();
+        }
+    } catch (error) {
+        log.error(`Upload failed for '${file.name}' (${formatFileSize(file.size)}):`, error);
+        showUploadNotification(`Upload failed unexpectedly: ${getErrorMessage(error)}`, Toasts.Type.FAILURE);
+
+        // Clear progress bar on error - force immediate hide
+        clearAndForceHide();
+        await Native.clearProgress();
+
+        // Clear Discord's native upload UI on error too
+        const channelId = SelectedChannelStore.getChannelId();
+        if (channelId) {
+            try {
+                UploadManager.clearAll(channelId, DraftType.ChannelMessage);
+                UploadManager.clearAll(channelId, DraftType.SlashCommand);
+            } catch (clearError) {
+                log.warn("Failed to clear native upload UI on error:", clearError);
+            }
+        }
+    }
+}
+
+async function triggerFileUpload() {
+    try {
+        const channelId = SelectedChannelStore.getChannelId();
+        log.debug("triggerFileUpload invoked", { channelId });
+        log.info("Manual upload started");
+
+        // Start progress tracking for button upload
+        startUploadBatch(1);
+        log.debug("Upload batch started for manual selection");
+
+        // Notify user which uploader will be used
+        const selectedUploader = settings.store.fileUploader || "Catbox";
+        showUploadNotification(`Uploading via ${selectedUploader}...`, Toasts.Type.MESSAGE);
+        log.debug("Manual uploader selection snapshot", {
+            selectedUploader,
+            gofileToken: Boolean(settings.store.gofileToken),
+            catboxUserHash: Boolean(settings.store.catboxUserHash),
+            litterboxTime: settings.store.litterboxTime
+        });
+        log.info(`Manual uploader: ${selectedUploader}`);
+
+        // Secure upload: everything happens in main process (unlimited file size)
+        const result = await Native.pickAndUploadFile({
+            fileUploader: selectedUploader,
+            gofileToken: settings.store.gofileToken,
+            catboxUserHash: settings.store.catboxUserHash,
+            litterboxTime: settings.store.litterboxTime,
+            zeroX0Expires: settings.store.zeroX0Expires,
+            autoFormat: settings.store.autoFormat,
+            customUploaderRequestURL: settings.store.customUploaderRequestURL,
+            customUploaderFileFormName: settings.store.customUploaderFileFormName,
+            customUploaderResponseType: settings.store.customUploaderResponseType,
+            customUploaderURL: settings.store.customUploaderURL,
+            customUploaderArgs: settings.store.customUploaderArgs,
+            customUploaderHeaders: settings.store.customUploaderHeaders,
+            customUploaderRequestMethod: settings.store.customUploaderRequestMethod,
+            customUploaderBodyType: settings.store.customUploaderBodyType,
+            loggingLevel: (settings.store.loggingLevel as LoggingLevel) ?? "errors"
+        }) as UploadResult;
+        log.debug("Native.pickAndUploadFile result:", result);
+
+        if (!result.success) {
+            clearAndForceHide();
+
+            if (result.error === "File selection cancelled") {
+                showUploadNotification("File selection cancelled", Toasts.Type.MESSAGE);
                 return;
             }
 
-            continue;
+            if (result.error === "Upload cancelled by user") {
+                showUploadNotification("Upload cancelled", Toasts.Type.FAILURE);
+                return;
+            }
+
+            showUploadNotification(`Upload failed: ${result.error}`, Toasts.Type.FAILURE);
+            if (channelId) {
+                try {
+                    UploadManager.clearAll(channelId, DraftType.ChannelMessage);
+                    UploadManager.clearAll(channelId, DraftType.SlashCommand);
+                } catch (clearError) {
+                    log.warn("Failed to clear native upload UI:", clearError);
+                }
+            }
+            return;
         }
-    }
-}
 
-function triggerFileUpload() {
-    const fileInput = document.createElement("input");
-    fileInput.type = "file";
-    fileInput.style.display = "none";
+        // Send URL to chat
+        if (result.url) {
+            if (result.fileName) {
+                const formattedSize = typeof result.fileSize === "number" ? formatFileSize(result.fileSize) : "unknown size";
+                log.debug(`Manual upload completed for ${result.fileName} (${formattedSize}) via ${result.actualUploader || selectedUploader}`);
+            }
+            const finalUrl = wrapWithEmbedsVideo(
+                result.url,
+                result.fileName || "",
+                settings.store.useEmbedsVideo === "Yes"
+            );
 
-    fileInput.onchange = async event => {
-        const target = event.target as HTMLInputElement;
-        if (target && target.files && target.files.length > 0) {
-            const file = target.files[0];
-            if (file) {
-                const channelId = SelectedChannelStore.getChannelId();
-                await uploadFile(file, channelId);
+            // Send text first, then atomically complete + dispatch to prevent race condition
+            sendTextToChat(`${finalUrl} `);
+            showUploadNotification(`${result.fileName} uploaded successfully`, Toasts.Type.SUCCESS);
+            notifyFallbackInfo(result);
+
+            // Use atomic completeAndDispatch to set both isComplete and isDispatched together
+            // This prevents race conditions where one state is set but not the other
+            if (result.uploadId) {
+                log.debug("Using atomic completeAndDispatch for manual upload", { uploadId: result.uploadId });
+                completeAndDispatch(result.uploadId);
             } else {
-                showToast("No file selected");
+                log.debug("Manual upload succeeded without uploadId, using markDispatched fallback");
+                markDispatched();
             }
         }
-    };
 
-    document.body.appendChild(fileInput);
-    fileInput.click();
-    document.body.removeChild(fileInput);
+        if (channelId) {
+            try {
+                UploadManager.clearAll(channelId, DraftType.ChannelMessage);
+                UploadManager.clearAll(channelId, DraftType.SlashCommand);
+            } catch (clearError) {
+                log.warn("Failed to clear native upload UI:", clearError);
+            }
+        }
+    } catch (error) {
+        log.error(`Manual upload failed (uploader: ${settings.store.fileUploader || "Catbox"}):`, error);
+        showUploadNotification(`Upload failed unexpectedly: ${getErrorMessage(error)}`, Toasts.Type.FAILURE);
+
+        // Clear progress bar on error - force immediate hide
+        clearAndForceHide();
+        await Native.clearProgress();
+
+        // Clear Discord's native upload UI on error too
+        const channelId = SelectedChannelStore.getChannelId();
+        if (channelId) {
+            try {
+                UploadManager.clearAll(channelId, DraftType.ChannelMessage);
+                UploadManager.clearAll(channelId, DraftType.SlashCommand);
+            } catch (clearError) {
+                log.warn("Failed to clear native upload UI on error:", clearError);
+            }
+        }
+    }
 }
 
 const ctxMenuPatch: NavContextMenuPatchCallback = (children, props) => {
@@ -1177,37 +1362,142 @@ const ctxMenuPatch: NavContextMenuPatchCallback = (children, props) => {
     );
 };
 
+// Paste event handler
+async function handlePaste(e: ClipboardEvent) {
+    const files = e.clipboardData?.files;
+    if (!files || files.length === 0) return;
+
+    const fileArray = Array.from(files);
+
+    // CRITICAL: Prevent Discord from also processing this paste event
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+
+    // Check if ALL files are under Nitro limit - if so, use Discord's native UploadManager
+    const allUnderNitroLimit = fileArray.every(file => shouldUseNativeUpload(file.size));
+    if (allUnderNitroLimit) {
+        log.debug("All files under Nitro limit, using Discord's native upload", {
+            nitroLimit: formatFileSize(getNitroLimit()),
+            files: fileArray.map(f => ({ name: f.name, size: formatFileSize(f.size) }))
+        });
+
+        const channelId = SelectedChannelStore.getChannelId();
+        if (channelId) {
+            // Use Discord's native UploadManager to handle the files
+            UploadManager.addFiles({
+                channelId,
+                draftType: DraftType.ChannelMessage,
+                files: fileArray.map(file => ({ file, platform: 1 })),
+                showLargeMessageDialog: false
+            });
+        }
+        return;
+    }
+
+    const channelId = SelectedChannelStore.getChannelId();
+
+    if (!channelId) {
+        showToast("Please select a channel before uploading", Toasts.Type.FAILURE);
+        return;
+    }
+
+    // Clear Discord's native upload modal immediately (same as drag-and-drop)
+    UploadManager.clearAll(channelId, DraftType.ChannelMessage);
+    UploadManager.clearAll(channelId, DraftType.SlashCommand);
+
+    log.info("Paste intercepted (files exceed Nitro limit)");
+    log.debug("Paste handler received files:", fileArray.map(file => ({
+        name: file.name,
+        size: formatFileSize(file.size),
+        type: file.type || "unknown"
+    })));
+
+    // Start batch upload tracking for all files (even single files)
+    startUploadBatch(fileArray.length);
+
+    // Upload each file using the secure buffer method
+    for (const file of fileArray) {
+        try {
+            await handleSmallFileUpload(file, true); // true = skip batch start since we already started it
+        } catch (error) {
+            log.error("Paste upload error:", error);
+            showUploadNotification(`Failed to upload '${file.name}'. Try again or use the Upload button.`, Toasts.Type.FAILURE);
+        }
+    }
+}
+
+// Set the upload function for dragDrop.ts to use
+setUploadFunction(handleSmallFileUpload);
+
+// Set the Nitro limit checker for dragDrop.ts to use
+setNitroLimitChecker(shouldUseNativeUpload);
+
+
 export default definePlugin({
     name: "BigFileUpload",
-    description: "Bypass Discord's upload limit by uploading files using the 'Upload a Big File' button or /fileupload and they'll get uploaded as links into chat via file uploaders.",
+    description: "Bypass Discord's upload limit by uploading to external file uploaders via drag-drop, paste, or the Upload button.",
     authors: [Devs.ScattrdBlade],
     settings,
     dependencies: ["CommandsAPI"],
+
+
+    patches: [
+        {
+            find: "formWithLoadedChatInput",
+            replacement: {
+                // Insert progress bar before the form
+                // The actual webpack code: (0,i.jsxs)("form",{ref:this.inputFormRef,onSubmit:e4,className:
+                match: /\(0,i\.jsxs\)\("form",\{ref:this\.inputFormRef/,
+                replace: '$self.renderProgressBar(),(0,i.jsxs)("form",{ref:this.inputFormRef'
+            }
+        }
+    ],
+
+
+    start() {
+        // Start progress polling for the progress bar
+        startProgressPolling();
+        startNativeNotificationPolling();
+        log.debug("Progress polling initialized from plugin start");
+
+        // Enable drag-and-drop if enabled in settings
+        if (settings.store.dragAndDropEnabled !== "No") {
+            enableDragDropOverride();
+            log.info("Drag-and-drop enabled");
+        } else {
+            log.info("Drag-and-drop disabled by user settings");
+        }
+
+        // Enable paste handler separately if enabled in settings
+        if (settings.store.pasteEnabled !== "No") {
+            document.addEventListener("paste", handlePaste, { capture: true });
+            log.info("Paste interception enabled");
+        } else {
+            log.info("Paste interception disabled by user settings");
+        }
+    },
+
+    stop() {
+        // Stop progress polling to prevent memory leaks
+        stopProgressPolling();
+
+        // Disable drag-and-drop
+        disableDragDropOverride();
+
+        // Disable paste
+        document.removeEventListener("paste", handlePaste, { capture: true });
+        log.info("BigFileUpload disabled");
+
+        stopNativeNotificationPolling();
+    },
+
+    // Following SpotifyControls pattern - render the component directly
+    renderProgressBar() {
+        return React.createElement(UploadProgressBar);
+    },
+
     contextMenus: {
         "channel-attach": ctxMenuPatch,
     },
-    commands: [
-        {
-            inputType: ApplicationCommandInputType.BUILT_IN,
-            name: "fileupload",
-            description: "Upload a file",
-            options: [
-                {
-                    name: "file",
-                    description: "The file to upload",
-                    type: ApplicationCommandOptionType.ATTACHMENT,
-                    required: true,
-                },
-            ],
-            execute: async (opts, cmdCtx) => {
-                const file = await resolveFile(opts, cmdCtx);
-                if (file) {
-                    await uploadFile(file, cmdCtx.channel.id);
-                } else {
-                    sendBotMessage(cmdCtx.channel.id, { content: "No file specified!" });
-                    UploadManager.clearAll(cmdCtx.channel.id, DraftType.SlashCommand);
-                }
-            },
-        },
-    ],
 });
