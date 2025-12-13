@@ -54,12 +54,7 @@ export function wrapWithEmbedsVideo(url: string, filename: string, enabled: bool
         "fileditch.com": "fd",
         "cdn.discordapp.com": "disc",
         "catbox.moe": "cat",
-        "litterbox.catbox.moe": "cat",
         "0x0.st": "0x0",
-        "temp.sh": "cat",
-        "tmpfiles.org": "cat",
-        "filebin.net": "cat",
-        "buzzheavier.com": "cat"
     };
 
     try {
