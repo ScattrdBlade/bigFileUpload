@@ -151,9 +151,10 @@ function startNativeNotificationPolling() {
     if (nativeNotificationInterval !== null) return;
     // Poll immediately once to catch queued notifications
     void pollNativeNotifications();
+    // Poll every 500ms for faster fallback notifications
     nativeNotificationInterval = window.setInterval(() => {
         void pollNativeNotifications();
-    }, 1500);
+    }, 500);
 }
 
 function stopNativeNotificationPolling() {
@@ -808,13 +809,12 @@ const settings = definePluginSettings({
     uploadTimeout: {
         type: OptionType.SELECT,
         options: [
-            { label: "Conservative (10 min max)", value: "conservative" },
-            { label: "Standard (20 min max)", value: "standard", default: true },
-            { label: "Extended (30 min max)", value: "extended" },
-            { label: "Maximum (60 min max)", value: "maximum" },
+            { label: "1 minute", value: "60000" },
+            { label: "2 minutes", value: "120000" },
+            { label: "5 minutes (Recommended)", value: "300000", default: true },
+            { label: "10 minutes", value: "600000" },
         ],
-        description: "Upload timeout for large files",
-        hidden: true
+        description: "How long to wait for the server to respond. Lower values may cause uploads to fail for large files or slow connections.",
     },
     catboxUserHash: {
         type: OptionType.STRING,
@@ -964,12 +964,6 @@ const settings = definePluginSettings({
         description: "Your Discord Nitro subscription tier",
         hidden: true
     },
-    notificationTimeout: {
-        type: OptionType.STRING,
-        default: "5000",
-        description: "Notification auto-dismiss timeout in milliseconds",
-        hidden: true
-    },
     loggingLevel: {
         type: OptionType.SELECT,
         options: [
@@ -1114,7 +1108,8 @@ async function handleSmallFileUpload(file: File, skipBatchStart = false) {
                 customUploaderHeaders: settings.store.customUploaderHeaders,
                 customUploaderRequestMethod: settings.store.customUploaderRequestMethod,
                 customUploaderBodyType: settings.store.customUploaderBodyType,
-                loggingLevel: (settings.store.loggingLevel as LoggingLevel) ?? "errors"
+                loggingLevel: (settings.store.loggingLevel as LoggingLevel) ?? "errors",
+                uploadTimeout: parseInt(settings.store.uploadTimeout || "300000", 10)
             }
         );
 
@@ -1259,8 +1254,37 @@ async function triggerFileUpload() {
             customUploaderHeaders: settings.store.customUploaderHeaders,
             customUploaderRequestMethod: settings.store.customUploaderRequestMethod,
             customUploaderBodyType: settings.store.customUploaderBodyType,
-            loggingLevel: (settings.store.loggingLevel as LoggingLevel) ?? "errors"
-        }) as UploadResult;
+            loggingLevel: (settings.store.loggingLevel as LoggingLevel) ?? "errors",
+            respectNitroLimit: settings.store.respectNitroLimit === "Yes",
+            nitroTier: settings.store.nitroType,
+            uploadTimeout: parseInt(settings.store.uploadTimeout || "300000", 10)
+        }) as UploadResult & { useNativeUpload?: boolean; buffer?: ArrayBuffer };
+
+        // If file is under Nitro limit, use Discord's native upload
+        if (result.useNativeUpload && result.buffer && result.fileName) {
+            log.debug("File under Nitro limit, using Discord's native upload", {
+                fileName: result.fileName,
+                fileSize: result.fileSize ? formatFileSize(result.fileSize) : "unknown"
+            });
+
+            // Clear progress bar since we're not using external upload
+            clearAndForceHide();
+
+            // Create a File object from the buffer
+            const file = new File([result.buffer], result.fileName);
+
+            // Use Discord's native UploadManager
+            if (channelId) {
+                UploadManager.addFiles({
+                    channelId,
+                    draftType: DraftType.ChannelMessage,
+                    files: [{ file, platform: 1 }],
+                    showLargeMessageDialog: false
+                });
+                showUploadNotification(`Using Discord upload for ${result.fileName}`, Toasts.Type.MESSAGE);
+            }
+            return;
+        }
         log.debug("Native.pickAndUploadFile result:", result);
 
         if (!result.success) {

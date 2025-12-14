@@ -81,19 +81,14 @@ export function UploadProgressBar() {
             setAllUploads(all);
             setIsComplete(complete);
 
-            // Safety check: If progress is stuck at 100% for too long, force completion
+            // At 100%, we're waiting for server response - don't force completion
+            // The upload will complete naturally when we receive the URL back
             if (current && current.percent >= 100 && !complete) {
                 if (!stuckAt100Timer) {
-                    log.debug("Progress at 100%, starting safety timer");
-                    stuckAt100Timer = setTimeout(() => {
-                        log.debug("Progress stuck at 100% for 3s, forcing completion");
-                        setIsComplete(true);
-                        clearGlobalState();
-                    }, 3000); // Wait 3 seconds before forcing completion
+                    log.debug("Progress at 100%, waiting for server response...");
+                    stuckAt100Timer = true as any; // Just mark that we've logged, don't set a timer
                 }
             } else if (stuckAt100Timer && (!current || current.percent < 100 || complete)) {
-                // Clear the timer if progress changes or completes normally
-                clearTimeout(stuckAt100Timer);
                 stuckAt100Timer = null;
             }
 

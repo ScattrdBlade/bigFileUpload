@@ -42,6 +42,13 @@ const EXE_FALLBACK_UPLOADER = "GoFile";
 // This only limits the JSON/text response from the upload service (1MB is plenty for any valid response)
 const MAX_RESPONSE_SIZE = 1 * 1024 * 1024;
 
+// Nitro upload limits (used to decide whether to use Discord's native upload)
+const NITRO_LIMITS: Record<string, number> = {
+    none: 10 * 1024 * 1024,     // 10MB for no Nitro
+    basic: 50 * 1024 * 1024,    // 50MB for Nitro Basic
+    full: 500 * 1024 * 1024,    // 500MB for full Nitro
+};
+
 function isExeFile(fileName: string): boolean {
     return fileName.toLowerCase().endsWith(".exe");
 }
@@ -474,7 +481,8 @@ function streamFilePutUpload(
     fileName: string,
     customHeaders: Record<string, string> = {},
     webContents?: WebContents,
-    uploadId?: string
+    uploadId?: string,
+    timeout: number = 300000
 ): Promise<string> {
     let isCancelled = false;
 
@@ -610,8 +618,8 @@ function streamFilePutUpload(
             });
         });
 
-        // Set request timeout
-        req.setTimeout(30000); // 30 second timeout for initial connection
+        // Set request timeout (user-configurable, default 5 minutes)
+        req.setTimeout(timeout);
 
         req.on("timeout", () => {
             clearInterval(stallCheckInterval);
@@ -619,7 +627,7 @@ function streamFilePutUpload(
                 activeRequests.delete(uploadId);
             }
             req.destroy();
-            reject(new Error("Request timeout - The server took too long to respond. Try again or use a different uploader."));
+            reject(new Error("Request timeout - The server took too long to respond."));
         });
 
         req.on("error", error => {
@@ -803,7 +811,8 @@ function streamFileBinaryCustom(
     method: "PUT" | "PATCH" | "POST",
     customHeaders: Record<string, string> = {},
     webContents?: WebContents,
-    uploadId?: string
+    uploadId?: string,
+    timeout: number = 300000
 ): Promise<string> {
     let isCancelled = false;
 
@@ -942,7 +951,8 @@ function streamFileBinaryCustom(
             });
         });
 
-        req.setTimeout(30000);
+        // Set request timeout (user-configurable, default 5 minutes)
+        req.setTimeout(timeout);
 
         req.on("timeout", () => {
             clearInterval(stallCheckInterval);
@@ -1076,7 +1086,8 @@ function streamFileUpload(
     fields: Record<string, string>,
     customHeaders: Record<string, string> = {},
     webContents?: WebContents,
-    uploadId?: string
+    uploadId?: string,
+    timeout: number = 300000
 ): Promise<string> {
     // Track cancellation state outside Promise to allow cleanup function to modify it
     let isCancelled = false;
@@ -1243,8 +1254,8 @@ function streamFileUpload(
             });
         });
 
-        // Set request timeout
-        req.setTimeout(30000); // 30 second timeout for initial connection
+        // Set request timeout (user-configurable, default 5 minutes)
+        req.setTimeout(timeout);
 
         req.on("timeout", () => {
             clearInterval(stallCheckInterval);
@@ -1252,7 +1263,7 @@ function streamFileUpload(
                 activeRequests.delete(uploadId);
             }
             req.destroy();
-            reject(new Error("Request timeout - The server took too long to respond. Try again or use a different uploader."));
+            reject(new Error("Request timeout - The server took too long to respond."));
         });
 
         req.on("error", error => {
@@ -1452,7 +1463,7 @@ function streamFileUpload(
 /**
  * GoFile upload - streams from disk (path or temp file)
  */
-export async function uploadFileToGofileNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, token?: string, uploadId?: string): Promise<GoFileResponse> {
+export async function uploadFileToGofileNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, token?: string, uploadId?: string, timeout: number = 300000): Promise<GoFileResponse> {
     let filePath: string | undefined;
     let isTempFile = false;
 
@@ -1487,7 +1498,8 @@ export async function uploadFileToGofileNative(event: Electron.IpcMainInvokeEven
                 "User-Agent": "VencordBigFileUpload/1.0"
             },
             event.sender,
-            uploadId
+            uploadId,
+            timeout
         );
 
         const result = JSON.parse(responseText);
@@ -1510,7 +1522,7 @@ export async function uploadFileToGofileNative(event: Electron.IpcMainInvokeEven
 /**
  * Catbox upload - streams from disk (path or temp file)
  */
-export async function uploadFileToCatboxNative(event: Electron.IpcMainInvokeEvent, url: string, filePathOrBuffer: string | ArrayBuffer, fileName: string, fileType: string, userHash: string, uploadId?: string): Promise<string> {
+export async function uploadFileToCatboxNative(event: Electron.IpcMainInvokeEvent, url: string, filePathOrBuffer: string | ArrayBuffer, fileName: string, fileType: string, userHash: string, uploadId?: string, timeout: number = 300000): Promise<string> {
     let filePath: string | undefined;
     let isTempFile = false;
 
@@ -1546,7 +1558,8 @@ export async function uploadFileToCatboxNative(event: Electron.IpcMainInvokeEven
                 "User-Agent": "VencordBigFileUpload/1.0"
             },
             event.sender,
-            uploadId
+            uploadId,
+            timeout
         );
 
         if (isTempFile) {
@@ -1565,7 +1578,7 @@ export async function uploadFileToCatboxNative(event: Electron.IpcMainInvokeEven
 /**
  * Litterbox upload - streams from disk (path or temp file)
  */
-export async function uploadFileToLitterboxNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, fileType: string, time: string, uploadId?: string): Promise<string> {
+export async function uploadFileToLitterboxNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, fileType: string, time: string, uploadId?: string, timeout: number = 300000): Promise<string> {
     let filePath: string | undefined;
     let isTempFile = false;
 
@@ -1597,7 +1610,8 @@ export async function uploadFileToLitterboxNative(event: Electron.IpcMainInvokeE
                 "User-Agent": "VencordBigFileUpload/1.0"
             },
             event.sender,
-            uploadId
+            uploadId,
+            timeout
         );
 
         if (isTempFile) {
@@ -1618,7 +1632,7 @@ export async function uploadFileToLitterboxNative(event: Electron.IpcMainInvokeE
  * Max size: ~10 GB, retention: 14 days (default, configurable via Max-Days header)
  * Uses PUT request as documented by transfer.sh
  */
-export async function uploadFileToTransferShNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, maxDays?: string, maxDownloads?: string, uploadId?: string): Promise<string> {
+export async function uploadFileToTransferShNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, maxDays?: string, maxDownloads?: string, uploadId?: string, timeout: number = 300000): Promise<string> {
     let filePath: string | undefined;
     let isTempFile = false;
 
@@ -1655,7 +1669,8 @@ export async function uploadFileToTransferShNative(event: Electron.IpcMainInvoke
             fileName,
             customHeaders,
             event.sender,
-            uploadId
+            uploadId,
+            timeout
         );
 
         if (isTempFile) {
@@ -1675,7 +1690,7 @@ export async function uploadFileToTransferShNative(event: Electron.IpcMainInvoke
  * temp.sh upload - streams from disk (path or temp file)
  * Max size: 4 GB, retention: 3 days (automatic)
  */
-export async function uploadFileToTempShNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, uploadId?: string): Promise<string> {
+export async function uploadFileToTempShNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, uploadId?: string, timeout: number = 300000): Promise<string> {
     let filePath: string | undefined;
     let isTempFile = false;
 
@@ -1703,7 +1718,8 @@ export async function uploadFileToTempShNative(event: Electron.IpcMainInvokeEven
                 "User-Agent": "VencordBigFileUpload/1.0"
             },
             event.sender,
-            uploadId
+            uploadId,
+            timeout
         );
 
         if (isTempFile) {
@@ -1723,7 +1739,7 @@ export async function uploadFileToTempShNative(event: Electron.IpcMainInvokeEven
  * tmpfiles.org upload - streams from disk (path or temp file)
  * Max size: 100 MB, retention: 60 minutes (automatic)
  */
-export async function uploadFileToTmpFilesNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, uploadId?: string): Promise<string> {
+export async function uploadFileToTmpFilesNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, uploadId?: string, timeout: number = 300000): Promise<string> {
     let filePath: string | undefined;
     let isTempFile = false;
 
@@ -1751,7 +1767,8 @@ export async function uploadFileToTmpFilesNative(event: Electron.IpcMainInvokeEv
                 "User-Agent": "VencordBigFileUpload/1.0"
             },
             event.sender,
-            uploadId
+            uploadId,
+            timeout
         );
 
         // Parse JSON response
@@ -1784,7 +1801,7 @@ export async function uploadFileToTmpFilesNative(event: Electron.IpcMainInvokeEv
  * Max size: Unlimited, retention: 6 days (automatic)
  * Uses 3-step process: generate bin ID, upload file, get URL
  */
-export async function uploadFileToFilebinNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, uploadId?: string): Promise<string> {
+export async function uploadFileToFilebinNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, uploadId?: string, timeout: number = 300000): Promise<string> {
     let filePath: string | undefined;
     let isTempFile = false;
 
@@ -1815,7 +1832,8 @@ export async function uploadFileToFilebinNative(event: Electron.IpcMainInvokeEve
                 "User-Agent": "VencordBigFileUpload/1.0"
             },
             event.sender,
-            uploadId
+            uploadId,
+            timeout
         );
 
         if (isTempFile) {
@@ -1837,7 +1855,7 @@ export async function uploadFileToFilebinNative(event: Electron.IpcMainInvokeEve
  * Max size: Unlimited, retention: permanent with 30+ downloads every 60 days (free), otherwise 8 days + 2 days per download
  * Uses PUT request
  */
-export async function uploadFileToBuzzheavierNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, uploadId?: string): Promise<string> {
+export async function uploadFileToBuzzheavierNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, uploadId?: string, timeout: number = 300000): Promise<string> {
     let filePath: string | undefined;
     let isTempFile = false;
 
@@ -1862,7 +1880,8 @@ export async function uploadFileToBuzzheavierNative(event: Electron.IpcMainInvok
                 "User-Agent": "VencordBigFileUpload/1.0"
             },
             event.sender,
-            uploadId
+            uploadId,
+            timeout
         );
 
         if (isTempFile) {
@@ -1896,7 +1915,7 @@ export async function uploadFileToBuzzheavierNative(event: Electron.IpcMainInvok
  * file.io upload - streams from disk (path or temp file)
  * Max size: 4 GB (free tier), retention: ~14 days or after first download
  */
-export async function uploadFileToFileIoNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, expires?: string, uploadId?: string): Promise<string> {
+export async function uploadFileToFileIoNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, expires?: string, uploadId?: string, timeout: number = 300000): Promise<string> {
     let filePath: string | undefined;
     let isTempFile = false;
 
@@ -1930,7 +1949,8 @@ export async function uploadFileToFileIoNative(event: Electron.IpcMainInvokeEven
                 "User-Agent": "VencordBigFileUpload/1.0"
             },
             event.sender,
-            uploadId
+            uploadId,
+            timeout
         );
 
         const result = JSON.parse(responseText);
@@ -1954,7 +1974,7 @@ export async function uploadFileToFileIoNative(event: Electron.IpcMainInvokeEven
  * 0x0.st upload - streams from disk (path or temp file)
  * Max size: 512 MiB, retention: at least 30 days (default, up to 1 year configurable via expires form field)
  */
-export async function uploadFileTo0x0StNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, expires?: string, uploadId?: string): Promise<string> {
+export async function uploadFileTo0x0StNative(event: Electron.IpcMainInvokeEvent, filePathOrBuffer: string | ArrayBuffer, fileName: string, expires?: string, uploadId?: string, timeout: number = 300000): Promise<string> {
     let filePath: string | undefined;
     let isTempFile = false;
 
@@ -1990,7 +2010,8 @@ export async function uploadFileTo0x0StNative(event: Electron.IpcMainInvokeEvent
                 "User-Agent": "VencordBigFileUpload/1.0"
             },
             event.sender,
-            uploadId
+            uploadId,
+            timeout
         );
 
         if (isTempFile) {
@@ -2022,7 +2043,8 @@ export async function uploadFileCustomNative(
     urlPath: string[],
     uploadId?: string,
     requestMethod?: string,
-    bodyType?: string
+    bodyType?: string,
+    timeout: number = 300000
 ): Promise<string> {
     let filePath: string | undefined;
     let isTempFile = false;
@@ -2060,7 +2082,8 @@ export async function uploadFileCustomNative(
                 method,
                 headers,
                 event.sender,
-                uploadId
+                uploadId,
+                timeout
             );
         } else {
             // Multipart form data upload (default)
@@ -2092,7 +2115,8 @@ export async function uploadFileCustomNative(
                     "User-Agent": "Vencord-BigFileUpload/1.0"
                 },
                 event.sender,
-                uploadId
+                uploadId,
+                timeout
             );
         }
 
@@ -2131,8 +2155,6 @@ export async function uploadFileBuffer(
         gofileToken?: string;
         catboxUserHash?: string;
         litterboxTime?: string;
-        transferShMaxDays?: string;
-        transferShMaxDownloads?: string;
         zeroX0Expires?: string;
         autoFormat?: string;
         customUploaderRequestURL?: string;
@@ -2144,6 +2166,7 @@ export async function uploadFileBuffer(
         customUploaderRequestMethod?: string;
         customUploaderBodyType?: string;
         loggingLevel?: LoggingLevel;
+        uploadTimeout?: number;
     }
 ): Promise<{ success: boolean; url?: string; fileName?: string; fileSize?: number; uploadId?: string; error?: string; actualUploader?: string; attemptedUploaders?: string[]; }> {
     updateLoggingLevel(uploaderSettings.loggingLevel);
@@ -2224,7 +2247,8 @@ export async function uploadFileBuffer(
                         buffer,
                         fileName,
                         uploaderSettings.gofileToken,
-                        isBackgroundRetry ? undefined : uploadId
+                        isBackgroundRetry ? undefined : uploadId,
+                        uploaderSettings.uploadTimeout
                     );
                     if (gofileResult.status === "ok" && gofileResult.data) {
                         const downloadUrl = gofileResult.data.downloadPage || (gofileResult.data.code ? `https://gofile.io/d/${gofileResult.data.code}` : undefined);
@@ -2245,7 +2269,8 @@ export async function uploadFileBuffer(
                         fileName,
                         mimeType || "application/octet-stream",
                         uploaderSettings.catboxUserHash || "",
-                        isBackgroundRetry ? undefined : uploadId
+                        isBackgroundRetry ? undefined : uploadId,
+                        uploaderSettings.uploadTimeout
                     );
                     break;
                 }
@@ -2256,7 +2281,8 @@ export async function uploadFileBuffer(
                         fileName,
                         mimeType || "application/octet-stream",
                         uploaderSettings.litterboxTime || "1h",
-                        isBackgroundRetry ? undefined : uploadId
+                        isBackgroundRetry ? undefined : uploadId,
+                        uploaderSettings.uploadTimeout
                     );
                     break;
                 }
@@ -2265,7 +2291,8 @@ export async function uploadFileBuffer(
                         event,
                         buffer,
                         fileName,
-                        isBackgroundRetry ? undefined : uploadId
+                        isBackgroundRetry ? undefined : uploadId,
+                        uploaderSettings.uploadTimeout
                     );
                     break;
                 }
@@ -2275,7 +2302,8 @@ export async function uploadFileBuffer(
                         buffer,
                         fileName,
                         uploaderSettings.zeroX0Expires,
-                        isBackgroundRetry ? undefined : uploadId
+                        isBackgroundRetry ? undefined : uploadId,
+                        uploaderSettings.uploadTimeout
                     );
                     break;
                 }
@@ -2284,7 +2312,8 @@ export async function uploadFileBuffer(
                         event,
                         buffer,
                         fileName,
-                        isBackgroundRetry ? undefined : uploadId
+                        isBackgroundRetry ? undefined : uploadId,
+                        uploaderSettings.uploadTimeout
                     );
                     break;
                 }
@@ -2293,7 +2322,8 @@ export async function uploadFileBuffer(
                         event,
                         buffer,
                         fileName,
-                        isBackgroundRetry ? undefined : uploadId
+                        isBackgroundRetry ? undefined : uploadId,
+                        uploaderSettings.uploadTimeout
                     );
                     break;
                 }
@@ -2302,7 +2332,8 @@ export async function uploadFileBuffer(
                         event,
                         buffer,
                         fileName,
-                        isBackgroundRetry ? undefined : uploadId
+                        isBackgroundRetry ? undefined : uploadId,
+                        uploaderSettings.uploadTimeout
                     );
                     break;
                 }
@@ -2330,7 +2361,8 @@ export async function uploadFileBuffer(
                         urlPath,
                         uploadId,
                         uploaderSettings.customUploaderRequestMethod,
-                        uploaderSettings.customUploaderBodyType
+                        uploaderSettings.customUploaderBodyType,
+                        uploaderSettings.uploadTimeout
                     );
                     break;
                 }
@@ -2410,9 +2442,20 @@ export async function uploadFileBuffer(
                 };
 
             } catch (error) {
-                nativeLog.error(`[BigFileUpload] Upload failed with ${uploader}:`, error);
-
                 const errorMessage = error instanceof Error ? error.message : String(error);
+
+                // Stop retrying if user cancelled - check BEFORE logging/notifying
+                if (errorMessage.toLowerCase().includes("upload cancelled by user")) {
+                    nativeLog.info("[BigFileUpload] Upload cancelled by user, aborting retries");
+                    clearProgress();
+                    return {
+                        success: false,
+                        error: "Upload cancelled by user",
+                        attemptedUploaders
+                    };
+                }
+
+                nativeLog.error(`[BigFileUpload] Upload failed with ${uploader}:`, error);
                 lastError = new Error(`[${uploader}] ${errorMessage}`);
                 attemptedUploaders.push(uploader);
 
@@ -2423,7 +2466,7 @@ export async function uploadFileBuffer(
                     shortError = errorMessage.substring(0, 100) + "...";
                 }
 
-                // Notify user of failure
+                // Notify user of failure (include error details so user can see what went wrong)
                 const isLastUploader = attemptedUploaders.length >= uploadersToTry.length;
                 if (event.sender && !event.sender.isDestroyed()) {
                     if (isLastUploader) {
@@ -2435,20 +2478,9 @@ export async function uploadFileBuffer(
                         const nextUploader = uploadersToTry[attemptedUploaders.length];
                         sendNotification(event, {
                             type: "failure",
-                            message: `${uploader} failed. Trying ${nextUploader} (+ background retry)...`
+                            message: `${uploader} failed: ${shortError}. Trying ${nextUploader}...`
                         });
                     }
-                }
-
-                // Stop retrying if user cancelled
-                if (errorMessage.toLowerCase().includes("upload cancelled by user")) {
-                    nativeLog.info("[BigFileUpload] Upload cancelled by user, aborting retries");
-                    clearProgress();
-                    return {
-                        success: false,
-                        error: "Upload cancelled by user",
-                        attemptedUploaders
-                    };
                 }
 
                 // Start background retry for this failed uploader (only once, not for Custom)
@@ -2559,8 +2591,6 @@ export async function pickAndUploadFile(
         gofileToken?: string;
         catboxUserHash?: string;
         litterboxTime?: string;
-        transferShMaxDays?: string;
-        transferShMaxDownloads?: string;
         zeroX0Expires?: string;
         autoFormat?: string;
         customUploaderRequestURL?: string;
@@ -2572,8 +2602,11 @@ export async function pickAndUploadFile(
         customUploaderRequestMethod?: string;
         customUploaderBodyType?: string;
         loggingLevel?: LoggingLevel;
+        respectNitroLimit?: boolean;
+        nitroTier?: string;
+        uploadTimeout?: number;
     }
-): Promise<{ success: boolean; url?: string; fileName?: string; fileSize?: number; uploadId?: string; error?: string; actualUploader?: string; attemptedUploaders?: string[]; }> {
+): Promise<{ success: boolean; url?: string; fileName?: string; fileSize?: number; uploadId?: string; error?: string; actualUploader?: string; attemptedUploaders?: string[]; useNativeUpload?: boolean; buffer?: ArrayBuffer; }> {
     updateLoggingLevel(uploaderSettings.loggingLevel);
     // Step 1: Show OS file picker dialog (user explicitly selects file)
     const browserWindow = BrowserWindow.fromWebContents(event.sender);
@@ -2594,6 +2627,23 @@ export async function pickAndUploadFile(
     const fileName = path.basename(filePath);
     const stats = await fs.promises.stat(filePath);
     const fileSize = stats.size;
+
+    // Check if file is under Nitro limit - if so, return early for Discord native upload
+    if (uploaderSettings.respectNitroLimit) {
+        const nitroLimit = NITRO_LIMITS[uploaderSettings.nitroTier || "none"] || NITRO_LIMITS.none;
+        if (fileSize <= nitroLimit) {
+            nativeLog.info(`[BigFileUpload] File under Nitro limit (${(fileSize / 1024 / 1024).toFixed(1)}MB <= ${(nitroLimit / 1024 / 1024).toFixed(0)}MB), using Discord native upload`);
+            // Read file into buffer for renderer to pass to Discord's UploadManager
+            const fileBuffer = await fs.promises.readFile(filePath);
+            return {
+                success: true,
+                useNativeUpload: true,
+                fileName,
+                fileSize,
+                buffer: fileBuffer.buffer.slice(fileBuffer.byteOffset, fileBuffer.byteOffset + fileBuffer.byteLength) as ArrayBuffer
+            };
+        }
+    }
 
     nativeLog.info(`[BigFileUpload] Securely uploading: ${fileName} (${(fileSize / 1024 / 1024).toFixed(1)}MB)`);
     nativeLog.debug(`[BigFileUpload] File path (main process only): ${filePath}`);
@@ -2672,7 +2722,8 @@ export async function pickAndUploadFile(
                         filePath,
                         fileName,
                         uploaderSettings.gofileToken,
-                        uploadId
+                        uploadId,
+                        uploaderSettings.uploadTimeout
                     );
 
                     if (gofileResult.status === "ok" && gofileResult.data) {
@@ -2697,7 +2748,8 @@ export async function pickAndUploadFile(
                         fileName,
                         "",
                         uploaderSettings.catboxUserHash || "",
-                        uploadId
+                        uploadId,
+                        uploaderSettings.uploadTimeout
                     );
                     uploadResult = catboxResult;
                     break;
@@ -2711,7 +2763,8 @@ export async function pickAndUploadFile(
                         fileName,
                         "",
                         uploaderSettings.litterboxTime || "1h",
-                        uploadId
+                        uploadId,
+                        uploaderSettings.uploadTimeout
                     );
                     uploadResult = litterboxResult;
                     break;
@@ -2723,7 +2776,8 @@ export async function pickAndUploadFile(
                         event,
                         filePath,
                         fileName,
-                        uploadId
+                        uploadId,
+                        uploaderSettings.uploadTimeout
                     );
                     uploadResult = tempShResult;
                     break;
@@ -2736,7 +2790,8 @@ export async function pickAndUploadFile(
                         filePath,
                         fileName,
                         uploaderSettings.zeroX0Expires,
-                        uploadId
+                        uploadId,
+                        uploaderSettings.uploadTimeout
                     );
                     uploadResult = zeroX0StResult;
                     break;
@@ -2748,7 +2803,8 @@ export async function pickAndUploadFile(
                         event,
                         filePath,
                         fileName,
-                        uploadId
+                        uploadId,
+                        uploaderSettings.uploadTimeout
                     );
                     uploadResult = tmpFilesResult;
                     break;
@@ -2760,7 +2816,8 @@ export async function pickAndUploadFile(
                         event,
                         filePath,
                         fileName,
-                        uploadId
+                        uploadId,
+                        uploaderSettings.uploadTimeout
                     );
                     uploadResult = filebinResult;
                     break;
@@ -2772,7 +2829,8 @@ export async function pickAndUploadFile(
                         event,
                         filePath,
                         fileName,
-                        uploadId
+                        uploadId,
+                        uploaderSettings.uploadTimeout
                     );
                     uploadResult = buzzheavierResult;
                     break;
@@ -2805,7 +2863,8 @@ export async function pickAndUploadFile(
                         urlPath,
                         uploadId,
                         uploaderSettings.customUploaderRequestMethod,
-                        uploaderSettings.customUploaderBodyType
+                        uploaderSettings.customUploaderBodyType,
+                        uploaderSettings.uploadTimeout
                     );
                     uploadResult = customResult;
                     break;
@@ -2841,10 +2900,25 @@ export async function pickAndUploadFile(
             };
 
         } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+
+            // Stop immediately if user cancelled - no error notification needed
+            if (errorMessage.toLowerCase().includes("upload cancelled by user")) {
+                nativeLog.info("[BigFileUpload] Upload cancelled by user, aborting");
+                if (latestProgress && latestProgress.uploadId === uploadId) {
+                    latestProgress = undefined;
+                    latestProgressTimestamp = 0;
+                }
+                return {
+                    success: false,
+                    error: "Upload cancelled by user",
+                    attemptedUploaders
+                };
+            }
+
             nativeLog.error(`[BigFileUpload] Upload failed with ${uploader}:`, error);
 
             // Create detailed error with service name included
-            const errorMessage = error instanceof Error ? error.message : String(error);
             lastError = new Error(`[${uploader}] ${errorMessage}`);
             attemptedUploaders.push(uploader);
 
@@ -2854,7 +2928,7 @@ export async function pickAndUploadFile(
                 shortError = errorMessage.substring(0, 100) + "...";
             }
 
-            // Notify user of failure and whether we'll retry
+            // Notify user of failure and whether we'll retry (include error details)
             const isLastUploader = attemptedUploaders.length === uploadersToTry.length - 1;
             if (event.sender && !event.sender.isDestroyed()) {
                 if (isLastUploader) {
@@ -2866,7 +2940,7 @@ export async function pickAndUploadFile(
                     const nextUploader = uploadersToTry[attemptedUploaders.length];
                     sendNotification(event, {
                         type: "failure",
-                        message: `${uploader} failed. Retrying with ${nextUploader}...`
+                        message: `${uploader} failed: ${shortError}. Trying ${nextUploader}...`
                     });
                 }
             }

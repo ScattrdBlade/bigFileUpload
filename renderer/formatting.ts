@@ -50,6 +50,7 @@ export function wrapWithEmbedsVideo(url: string, filename: string, enabled: bool
         return url;
     }
 
+    // Only official embeds.video shorthands (per docs)
     const shorthandMap: Record<string, string> = {
         "fileditch.com": "fd",
         "cdn.discordapp.com": "disc",
