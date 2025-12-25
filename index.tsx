@@ -22,7 +22,7 @@ import { Button, DraftType, Menu, PermissionsBits, PermissionStore, React, Selec
 import { LoggingLevel, pluginLogger as log, setLoggingLevelProvider } from "./logging";
 import { UploadProgressBar } from "./renderer/components/UploadProgressBar";
 import { disableDragDropOverride, enableDragDropOverride, setNitroLimitChecker, setUploadFunction } from "./renderer/dragDrop";
-import { formatFileSize, wrapWithEmbedsVideo } from "./renderer/formatting";
+import { formatFileSize } from "./renderer/formatting";
 import { showUploadNotification } from "./renderer/notifications";
 import { clearAndForceHide, completeAndDispatch, completeUpload as completeUploadTracking, markDispatched, startProgressPolling, startUploadBatch, stopProgressPolling } from "./renderer/progress";
 
@@ -1109,18 +1109,13 @@ async function handleSmallFileUpload(file: File, skipBatchStart = false) {
                 customUploaderRequestMethod: settings.store.customUploaderRequestMethod,
                 customUploaderBodyType: settings.store.customUploaderBodyType,
                 loggingLevel: (settings.store.loggingLevel as LoggingLevel) ?? "errors",
-                uploadTimeout: parseInt(settings.store.uploadTimeout || "300000", 10)
+                uploadTimeout: parseInt(settings.store.uploadTimeout || "300000", 10),
+				useEmbedsVideo: settings.store.useEmbedsVideo
             }
         );
 
         const typedResult = result as UploadResult;
-        log.debug("Upload result", {
-            success: typedResult.success,
-            uploadId: typedResult.uploadId,
-            actualUploader: typedResult.actualUploader,
-            attemptedUploaders: typedResult.attemptedUploaders,
-            url: typedResult.url ? "(present)" : "(missing)"
-        });
+        log.debug("Upload result", result);
 
         // Ensure Discord's native upload UI is cleared so the progress bar disappears
         if (channelId) {
@@ -1148,14 +1143,8 @@ async function handleSmallFileUpload(file: File, skipBatchStart = false) {
 
         // Send URL to chat
         if (result.url) {
-            const finalUrl = wrapWithEmbedsVideo(
-                result.url,
-                result.fileName || "",
-                settings.store.useEmbedsVideo === "Yes"
-            );
-
             // Send text first, then atomically complete + dispatch to prevent race condition
-            sendTextToChat(`${finalUrl} `);
+            sendTextToChat(`${result.url}`);
 
             // Use atomic completeAndDispatch to set both isComplete and isDispatched together
             // This prevents race conditions where one state is set but not the other
@@ -1257,7 +1246,8 @@ async function triggerFileUpload() {
             loggingLevel: (settings.store.loggingLevel as LoggingLevel) ?? "errors",
             respectNitroLimit: settings.store.respectNitroLimit === "Yes",
             nitroTier: settings.store.nitroType,
-            uploadTimeout: parseInt(settings.store.uploadTimeout || "300000", 10)
+            uploadTimeout: parseInt(settings.store.uploadTimeout || "300000", 10),
+			useEmbedsVideo: settings.store.useEmbedsVideo
         }) as UploadResult & { useNativeUpload?: boolean; buffer?: ArrayBuffer };
 
         // If file is under Nitro limit, use Discord's native upload
@@ -1318,14 +1308,9 @@ async function triggerFileUpload() {
                 const formattedSize = typeof result.fileSize === "number" ? formatFileSize(result.fileSize) : "unknown size";
                 log.debug(`Manual upload completed for ${result.fileName} (${formattedSize}) via ${result.actualUploader || selectedUploader}`);
             }
-            const finalUrl = wrapWithEmbedsVideo(
-                result.url,
-                result.fileName || "",
-                settings.store.useEmbedsVideo === "Yes"
-            );
 
             // Send text first, then atomically complete + dispatch to prevent race condition
-            sendTextToChat(`${finalUrl} `);
+            sendTextToChat(`${result.url}`);
             showUploadNotification(`${result.fileName} uploaded successfully`, Toasts.Type.SUCCESS);
             notifyFallbackInfo(result);
 
