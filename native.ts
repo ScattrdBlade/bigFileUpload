@@ -2167,6 +2167,7 @@ export async function uploadFileBuffer(
         customUploaderBodyType?: string;
         loggingLevel?: LoggingLevel;
         uploadTimeout?: number;
+        useEmbedsVideo?: string;
     }
 ): Promise<{ success: boolean; url?: string; fileName?: string; fileSize?: number; uploadId?: string; error?: string; actualUploader?: string; attemptedUploaders?: string[]; }> {
     updateLoggingLevel(uploaderSettings.loggingLevel);
@@ -2403,8 +2404,11 @@ export async function uploadFileBuffer(
                 if (backgroundWinner) {
                     nativeLog.info(`[BigFileUpload] ✅ Background retry succeeded with ${backgroundWinner.uploader}!`);
                     let finalUrl = backgroundWinner.url;
+                    if (uploaderSettings.useEmbedsVideo === "Yes") {
+						finalUrl = "https://embeds.video/" + uploadResult;
+					}
                     if (uploaderSettings.autoFormat === "Yes") {
-                        finalUrl = `[${fileName}](${backgroundWinner.url})`;
+                        finalUrl = `[${fileName}](${finalUrl})`;
                     }
                     return {
                         success: true,
@@ -2424,8 +2428,12 @@ export async function uploadFileBuffer(
 
                 // Format URL if requested
                 let finalUrl = uploadResult;
+                if (uploaderSettings.useEmbedsVideo === "Yes") {
+					finalUrl = "https://embeds.video/" + uploadResult;
+				}
+
                 if (uploaderSettings.autoFormat === "Yes") {
-                    finalUrl = `[${fileName}](${uploadResult})`;
+                    finalUrl = `[${fileName}](${finalUrl})`;
                 }
 
                 // Keep progress for completion message - renderer will clear it via completeUpload()
@@ -2539,8 +2547,11 @@ export async function uploadFileBuffer(
                     if (finalCheck) {
                         nativeLog.info(`[BigFileUpload] ✅ Background retry saved the day with ${finalCheck.uploader}!`);
                         let finalUrl = finalCheck.url;
+                        if (uploaderSettings.useEmbedsVideo === "Yes") {
+						    finalUrl = "https://embeds.video/" + uploadResult;
+					    }
                         if (uploaderSettings.autoFormat === "Yes") {
-                            finalUrl = `[${fileName}](${finalCheck.url})`;
+                            finalUrl = `[${fileName}](${finalUrl})`;
                         }
                         return {
                             success: true,
@@ -2605,6 +2616,7 @@ export async function pickAndUploadFile(
         respectNitroLimit?: boolean;
         nitroTier?: string;
         uploadTimeout?: number;
+        useEmbedsVideo?: string;
     }
 ): Promise<{ success: boolean; url?: string; fileName?: string; fileSize?: number; uploadId?: string; error?: string; actualUploader?: string; attemptedUploaders?: string[]; useNativeUpload?: boolean; buffer?: ArrayBuffer; }> {
     updateLoggingLevel(uploaderSettings.loggingLevel);
@@ -2882,8 +2894,12 @@ export async function pickAndUploadFile(
 
             // Format URL if requested
             let finalUrl = uploadResult;
+            if (uploaderSettings.useEmbedsVideo === "Yes") {
+				finalUrl = "https://embeds.video/" + uploadResult;
+			}
+
             if (uploaderSettings.autoFormat === "Yes") {
-                finalUrl = `[${fileName}](${uploadResult})`;
+                finalUrl = `[${fileName}](${finalUrl})`;
             }
 
             // Return success result
