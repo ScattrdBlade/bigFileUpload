@@ -1,13 +1,9 @@
-**UPDATE: Major revamp with real-time progress bar, streaming uploads, and full ShareX compatibility**
+**UPDATE: Multiple embed services, fallback controls, and bug fixes**
 
--   **More file uploaders** - additional natively supported file uploaders
--   **New progress bar** - real-time upload progress with speed, ETA, percentage, and cancel button
--   **Streaming uploads** - faster file transfers with chunked streaming instead of loading entire file into memory
--   **Full ShareX support** - import `.sxcu` configs with POST/PUT/PATCH methods, binary uploads, and smart JSON response parsing
--   **Nitro-aware mode** - optionally let Discord handle files under your Nitro limit natively
--   **Drag & drop / paste** - intercept file uploads up to 1GB
--   **Video embedding** - auto-wrap video links with embeds.video for inline playback
--   **Better error handling** - detailed error messages with file context for easier debugging
+-   **Multiple embed services** - choose from embeddr.top (default), x266.mov, discord.nfp.is, or stolen.shoes for video embedding (and removed videos.embed as it is deprecated)
+-   **Disable fallbacks** - new option to only use your selected uploader without automatic fallbacks
+-   **Bug fixes** - fixed progress bar display issues, upload tracking, and various edge cases
+-   **Code cleanup** - refactored styles to use CSS classes
 
 > [!TIP]
 > **If you run into any issues, please let me know on [Discord](https://discord.gg/jHDJaW9Gyz)**

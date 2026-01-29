@@ -9,14 +9,15 @@
  * Exposes functions consumed by the renderer entry
  */
 
-import { ChannelStore, DraftType, SelectedChannelStore, showToast, Toasts, UploadManager } from "@webpack/common";
+import { ChannelStore, DraftStore, DraftType, SelectedChannelStore, showToast, Toasts, UploadAttachmentStore, UploadManager } from "@webpack/common";
 
 import { pluginLogger as log } from "../logging";
 import { formatFileSize } from "./formatting";
 import { startUploadBatch } from "./progress";
 
 // Upload function will be injected by index.tsx
-let uploadBufferFn: ((file: File) => Promise<void>) | null = null;
+// Second arg: skipBatchStart - true when caller already called startUploadBatch
+let uploadBufferFn: ((file: File, skipBatchStart?: boolean) => Promise<void>) | null = null;
 
 // Nitro limit checker function - injected by index.tsx
 let shouldUseNativeUploadFn: ((fileSize: number) => boolean) | null = null;
@@ -27,7 +28,7 @@ let dragOverlay: HTMLDivElement | null = null;
 // Drag-and-drop size limit (1GB)
 export const DRAG_DROP_MAX_SIZE = 1024 * 1024 * 1024;
 
-export function setUploadFunction(fn: (file: File) => Promise<void>) {
+export function setUploadFunction(fn: (file: File, skipBatchStart?: boolean) => Promise<void>) {
     uploadBufferFn = fn;
 }
 
@@ -44,75 +45,27 @@ function showDragOverlay() {
     const channelName = channel?.name || "channel";
 
     dragOverlay = document.createElement("div");
-    dragOverlay.style.cssText = `
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background: rgba(88, 101, 242, 0.3);
-        backdrop-filter: blur(4px);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 9999;
-        pointer-events: none;
-    `;
+    dragOverlay.className = "vc-bfu-drag-overlay";
 
     const content = document.createElement("div");
-    content.style.cssText = `
-        background: rgba(88, 101, 242, 0.95);
-        padding: 48px 64px;
-        border-radius: 16px;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 16px;
-    `;
+    content.className = "vc-bfu-drag-content";
 
     const icon = document.createElement("img");
     icon.src = "https://media.discordapp.net/stickers/1039992459209490513.png";
-    icon.style.cssText = `
-        width: 128px;
-        height: 128px;
-        animation: pulse 1.5s ease-in-out infinite;
-    `;
+    icon.className = "vc-bfu-drag-icon";
 
     const text = document.createElement("div");
     text.textContent = "Upload to #" + channelName;
-    text.style.cssText = `
-        font-size: 24px;
-        font-weight: 700;
-        color: white;
-        text-align: center;
-    `;
+    text.className = "vc-bfu-drag-text";
 
     const subtext = document.createElement("div");
     subtext.textContent = "Using BigFileUpload (Max 1GB via drag-and-drop)";
-    subtext.style.cssText = `
-        font-size: 14px;
-        font-weight: 500;
-        color: rgba(255, 255, 255, 0.8);
-        text-align: center;
-    `;
+    subtext.className = "vc-bfu-drag-subtext";
 
     content.appendChild(icon);
     content.appendChild(text);
     content.appendChild(subtext);
     dragOverlay.appendChild(content);
-
-    if (!document.getElementById("bigfileupload-animations")) {
-        const style = document.createElement("style");
-        style.id = "bigfileupload-animations";
-        style.textContent = `
-            @keyframes pulse {
-                0%, 100% { transform: scale(1); opacity: 1; }
-                50% { transform: scale(1.05); opacity: 0.9; }
-            }
-        `;
-        document.head.appendChild(style);
-    }
 
     document.body.appendChild(dragOverlay);
 }
@@ -128,6 +81,29 @@ function hideDragOverlay() {
 // Each dragenter increments, each dragleave decrements, hide overlay when counter reaches 0
 let dragEnterCount = 0;
 
+/**
+ * True when we must not show the overlay or intercept (let Discord handle natively):
+ * - Forum: only when creating a new post (new-post composer open), not when inside an existing post/thread.
+ * - Slash command: user has draft or attachments in slash command context.
+ * Uses project stores only (ChannelStore, DraftStore, UploadAttachmentStore) - no DOM.
+ */
+export function isForumOrSlashCommandContextForChannel(channelId: string | null): boolean {
+    if (!channelId) return false;
+    try {
+        const channel = ChannelStore.getChannel(channelId);
+        // Forum: only skip when in forum channel AND new-post composer is open (thread settings),
+        // not when inside an existing post/thread (then channel is the thread, not the forum)
+        if (channel?.isForumChannel?.() && DraftStore.getThreadSettings(channelId)) return true;
+        // Slash command: user has draft or attachments in slash command context
+        if (DraftStore.getDraft(channelId, DraftType.SlashCommand)?.trim()) return true;
+        if (UploadAttachmentStore.getUploadCount(channelId, DraftType.SlashCommand) > 0) return true;
+    } catch {
+        // Stores may not be ready
+        return false;
+    }
+    return false;
+}
+
 function hasFileItems(dataTransfer: DataTransfer | null): boolean {
     if (!dataTransfer?.items?.length) return false;
     for (let i = 0; i < dataTransfer.items.length; i++) {
@@ -140,6 +116,13 @@ function hasFileItems(dataTransfer: DataTransfer | null): boolean {
 
 function handleDragEnter(e: DragEvent) {
     if (!hasFileItems(e.dataTransfer)) return;
+
+    // Do not show overlay or intercept when user is uploading to forum post or slash command
+    const channelId = SelectedChannelStore.getChannelId();
+    if (isForumOrSlashCommandContextForChannel(channelId)) {
+        log.debug("Drag over forum/slash context, not showing overlay");
+        return;
+    }
 
     dragEnterCount++;
     log.debug("handleDragEnter invoked", {
@@ -157,6 +140,9 @@ function handleDragEnter(e: DragEvent) {
 }
 
 function handleDragOver(e: DragEvent) {
+    // Do not intercept when in forum/slash context so Discord can receive the drop
+    if (isForumOrSlashCommandContextForChannel(SelectedChannelStore.getChannelId())) return;
+
     // Must prevent default for drop to work
     if (dragEnterCount > 0 || hasFileItems(e.dataTransfer)) {
         e.preventDefault();
@@ -181,30 +167,49 @@ function handleDragLeave(e: DragEvent) {
     }
 }
 
+const FirstThreadMessageDraftType = 2;
+
+function clearAllDraftTypesInDrop(channelId: string) {
+    try {
+        UploadManager.clearAll(channelId, DraftType.ChannelMessage);
+        UploadManager.clearAll(channelId, DraftType.SlashCommand);
+        UploadManager.clearAll(channelId, (DraftType as Record<string, number>).FirstThreadMessage ?? FirstThreadMessageDraftType);
+    } catch (err) {
+        log.warn("Failed to clear native upload UI:", err);
+    }
+}
+
 export async function handleDrop(e: DragEvent) {
     log.debug("handleDrop received event", {
         fileCount: e.dataTransfer?.files?.length ?? 0
     });
     if (!e.dataTransfer?.files?.length) return;
 
+    const channelId = SelectedChannelStore.getChannelId();
+
+    // Do not intercept when user is dropping onto forum post or slash command input
+    if (isForumOrSlashCommandContextForChannel(channelId)) {
+        log.debug("Drop on forum/slash context, not intercepting");
+        hideDragOverlay();
+        dragEnterCount = 0;
+        return;
+    }
+
     const files = Array.from(e.dataTransfer.files);
 
-    e.preventDefault();
-    e.stopPropagation();
-
-    // Check if ALL files are under Nitro limit - if so, use Discord's native UploadManager
+    // Check if ALL files are under Nitro limit - use Discord's native upload.
+    // We must call UploadManager.addFiles (not just return) because we already
+    // preventDefault/stopPropagation on dragEnter/dragOver, so the drop never
+    // reaches Discord if we only return.
     if (shouldUseNativeUploadFn) {
         const allUnderNitroLimit = files.every(file => shouldUseNativeUploadFn!(file.size));
         if (allUnderNitroLimit) {
-            log.debug("All files under Nitro limit, using Discord's native upload", {
+            log.debug("All files under Nitro limit, using Discord native upload", {
                 files: files.map(f => ({ name: f.name, size: formatFileSize(f.size) }))
             });
             hideDragOverlay();
             dragEnterCount = 0;
-
-            const channelId = SelectedChannelStore.getChannelId();
             if (channelId) {
-                // Use Discord's native UploadManager to handle the files
                 UploadManager.addFiles({
                     channelId,
                     draftType: DraftType.ChannelMessage,
@@ -216,12 +221,14 @@ export async function handleDrop(e: DragEvent) {
         }
     }
 
+    e.preventDefault();
+    e.stopPropagation();
+
     hideDragOverlay();
     dragEnterCount = 0;
 
     if (!uploadBufferFn) return;
 
-    const channelId = SelectedChannelStore.getChannelId();
     log.debug("Processing drop for channel", { channelId });
 
     if (!channelId) {
@@ -229,7 +236,7 @@ export async function handleDrop(e: DragEvent) {
         return;
     }
 
-    UploadManager.clearAll(channelId, DraftType.ChannelMessage);
+    clearAllDraftTypesInDrop(channelId);
 
     log.debug(`Drag-and-drop: ${files.length} file(s) (exceeds Nitro limit)`, files.map(file => ({
         name: file.name,
@@ -253,7 +260,8 @@ export async function handleDrop(e: DragEvent) {
                 fileName: file.name,
                 fileSize: file.size
             });
-            await uploadBufferFn(file);
+            // Pass true for skipBatchStart since we already called startUploadBatch above
+            await uploadBufferFn(file, true);
 
         } catch (error) {
             log.error(`Drag-and-drop upload failed for '${file.name}':`, error);
@@ -277,10 +285,4 @@ export function disableDragDropOverride() {
     document.removeEventListener("drop", handleDrop, { capture: true });
     hideDragOverlay();
     dragEnterCount = 0;
-
-    // Clean up the animation style element to prevent memory leak
-    const animationStyle = document.getElementById("bigfileupload-animations");
-    if (animationStyle) {
-        animationStyle.remove();
-    }
 }

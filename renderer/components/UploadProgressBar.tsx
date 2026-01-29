@@ -35,6 +35,7 @@ export function UploadProgressBar() {
 
     // On mount, clear any stale upload state from before Discord reload
     useEffect(() => {
+        log.debug("UploadProgressBar component mounted");
         const currentProgress = getCurrentProgress();
         const isComplete = getIsComplete();
 
@@ -60,6 +61,11 @@ export function UploadProgressBar() {
             const complete = getIsComplete();
             const dispatched = getIsDispatched();
             const shouldForceHide = getForceHide();
+
+            // Debug: log when we have progress data
+            if (current) {
+                log.debug("Component poll found progress:", { uploadId: current.uploadId, percent: current.percent, isVisible });
+            }
 
             // Force hide immediately if error occurred
             if (shouldForceHide) {
@@ -317,120 +323,56 @@ export function UploadProgressBar() {
     const transferred = progress?.transferred ?? 0;
     const total = progress?.total ?? 0;
 
-    // Don't show until dimensions are properly calculated (not default "50%")
-    const isDimensionsReady = barWidth !== "50%";
+    // Show the component when visible - use default width if dimensions not calculated yet
+    // This ensures the progress bar appears even if DOM selectors fail to find elements
+    const shouldShow = isVisible;
 
-    // Calculate if we should show the component (visible AND dimensions ready)
-    const shouldShow = isVisible && isDimensionsReady;
+    const currentIndex = allUploads.findIndex(u => u.uploadId === progress?.uploadId);
+    const isFirstUpload = currentIndex === 0;
+    const isLastUpload = currentIndex === allUploads.length - 1;
 
     // Wrapper div to match chat input container positioning
     return (
         <div
             id="upload-progress-wrapper"
-            style={{
-                position: "relative",
-                width: "100%",
-                display: shouldShow ? "flex" : "none",
-                justifyContent: "flex-start",
-            }}
+            className={`vc-bfu-progress-wrapper ${!shouldShow ? "vc-bfu-progress-wrapper-hidden" : ""}`}
         >
             <div
-                style={{
-                    position: "relative",
-                    width: barWidth,
-                    // Use computed background color from scrollableContainer (adapts to all themes)
-                    backgroundColor: bgColor,
-                    borderRadius: "8px 8px 0 0", // Round both top corners (matches scrollableContainer)
-                    overflow: "hidden",
-                    marginBottom: "4px",
-                    // Match channelTextArea border (the parent wrapper has the border, not scrollableContainer)
-                    border: "1px solid var(--border-faint)",
-                    borderBottom: "none",
-                    transition: "border-color 0.2s ease, background-color 0.2s ease",
-                    // Match font family and size from chat input
-                    fontFamily: "var(--font-primary)",
-                    fontSize: "var(--font-size-md)",
-                    // Keep z-index low to not block typing indicator
-                    zIndex: 1
-                }}
+                className="vc-bfu-progress-bar-container"
+                style={{ width: barWidth, backgroundColor: bgColor }}
             >
                 {/* Collapsed view - just progress bar */}
                 {!isExpanded && (
-                    <div
-                        style={{
-                            paddingTop: "8px",
-                            paddingBottom: "10px",
-                            paddingLeft: "16px",
-                            paddingRight: "16px",
-                            cursor: "pointer",
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "8px"
-                        }}
-                        onClick={() => setIsExpanded(true)}
-                    >
+                    <div className="vc-bfu-collapsed" onClick={() => setIsExpanded(true)}>
                         {/* Up arrow icon */}
-                        <svg
-                            width="16"
-                            height="16"
-                            viewBox="0 0 24 24"
-                            fill="currentColor"
-                            style={{ color: "var(--interactive-normal)" }}
-                        >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" className="vc-bfu-collapse-icon">
                             <path d="M7 14l5-5 5 5H7z" />
                         </svg>
 
                         {/* Progress bar */}
-                        <div
-                            style={{
-                                flex: 1,
-                                height: "10px",
-                                backgroundColor: "var(--background-secondary-alt)",
-                                borderRadius: "5px",
-                                overflow: "hidden",
-                                border: "1px solid var(--background-modifier-accent)",
-                                boxShadow: "inset 0 1px 3px rgba(0, 0, 0, 0.2)"
-                            }}
-                        >
+                        <div className="vc-bfu-progress-track">
                             <div
-                                style={{
-                                    width: `${percent}%`,
-                                    height: "100%",
-                                    backgroundColor: isComplete ? "var(--green-360)" : "var(--brand-500)",
-                                    // Smooth transition over 1 second for visual continuity between updates
-                                    transition: "width 1s linear, background-color 0.3s ease",
-                                    boxShadow: isComplete ? "0 0 10px var(--green-360)" : "0 0 10px var(--brand-500)"
-                                }}
+                                className={`vc-bfu-progress-fill ${isComplete ? "vc-bfu-progress-fill-complete" : "vc-bfu-progress-fill-active"}`}
+                                style={{ width: `${percent}%` }}
                             />
                         </div>
 
                         {/* Percentage text */}
-                        <span style={{
-                            fontSize: "12px",
-                            color: "var(--text-muted)",
-                            minWidth: "45px",
-                            textAlign: "right"
-                        }}>
+                        <span className="vc-bfu-percent-text">
                             {isComplete ? "Done!" : `${percent.toFixed(0)}%`}
                         </span>
 
                         {/* Multiple file indicator */}
                         {allUploads.length > 1 && (
-                            <span style={{
-                                marginLeft: "8px",
-                                padding: "2px 6px",
-                                backgroundColor: "var(--background-secondary)",
-                                borderRadius: "4px",
-                                fontSize: "11px",
-                                color: "var(--header-primary)"
-                            }}>
-                                {allUploads.findIndex(u => u.uploadId === progress?.uploadId) + 1}/{allUploads.length}
+                            <span className="vc-bfu-multi-badge">
+                                {currentIndex + 1}/{allUploads.length}
                             </span>
                         )}
 
                         {/* Cancel button */}
                         {!isComplete && progress?.uploadId && (
                             <button
+                                className="vc-bfu-cancel-btn"
                                 disabled={isCancelling}
                                 onClick={async e => {
                                     e.stopPropagation();
@@ -450,34 +392,9 @@ export function UploadProgressBar() {
                                         setIsCancelling(false);
                                     }
                                 }}
-                                style={{
-                                    marginLeft: "4px",
-                                    padding: "4px",
-                                    backgroundColor: "transparent",
-                                    border: "none",
-                                    borderRadius: "4px",
-                                    cursor: isCancelling ? "not-allowed" : "pointer",
-                                    opacity: isCancelling ? 0.5 : 1,
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    color: "var(--status-danger)",
-                                    transition: "background-color 0.2s"
-                                }}
-                                onMouseEnter={e => {
-                                    e.currentTarget.style.backgroundColor = "var(--background-modifier-hover)";
-                                }}
-                                onMouseLeave={e => {
-                                    e.currentTarget.style.backgroundColor = "transparent";
-                                }}
                                 title="Cancel upload"
                             >
-                                <svg
-                                    width="16"
-                                    height="16"
-                                    viewBox="0 0 24 24"
-                                    fill="currentColor"
-                                >
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                                     <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
                                 </svg>
                             </button>
@@ -487,99 +404,49 @@ export function UploadProgressBar() {
 
                 {/* Expanded view - detailed stats */}
                 {isExpanded && (
-                    <div style={{
-                        paddingTop: "8px",
-                        paddingBottom: "32px",
-                        paddingLeft: "16px",
-                        paddingRight: "16px"
-                    }}>
+                    <div className="vc-bfu-expanded">
                         {/* Header with down arrow */}
-                        <div
-                            style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "8px",
-                                marginBottom: "8px",
-                                cursor: "pointer"
-                            }}
-                            onClick={() => setIsExpanded(false)}
-                        >
+                        <div className="vc-bfu-expanded-header" onClick={() => setIsExpanded(false)}>
                             {/* Down arrow icon */}
-                            <svg
-                                width="16"
-                                height="16"
-                                viewBox="0 0 24 24"
-                                fill="currentColor"
-                                style={{ color: "var(--interactive-normal)" }}
-                            >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" className="vc-bfu-expand-icon">
                                 <path d="M7 10l5 5 5-5H7z" />
                             </svg>
 
-                            <span style={{
-                                fontSize: "14px",
-                                fontWeight: 600,
-                                color: "var(--header-primary)",
-                                flex: 1
-                            }}>
+                            <span className="vc-bfu-title">
                                 {isComplete ? "Upload Complete" : "Uploading File"}
                                 {allUploads.length > 1 && (
-                                    <span style={{
-                                        marginLeft: "8px",
-                                        fontSize: "12px",
-                                        color: "var(--text-muted)",
-                                        fontWeight: "normal"
-                                    }}>
-                                        ({allUploads.findIndex(u => u.uploadId === progress?.uploadId) + 1} of {allUploads.length})
+                                    <span className="vc-bfu-title-count">
+                                        ({currentIndex + 1} of {allUploads.length})
                                     </span>
                                 )}
                             </span>
 
                             {/* Navigation and cancel buttons */}
-                            <div style={{ display: "flex", gap: "4px", alignItems: "center" }}>
+                            <div className="vc-bfu-nav-buttons">
                                 {/* Navigation buttons for multiple uploads */}
                                 {allUploads.length > 1 && (
                                     <>
                                         <button
+                                            className="vc-bfu-nav-btn"
                                             onClick={e => {
                                                 e.stopPropagation();
-                                                const currentIndex = allUploads.findIndex(u => u.uploadId === progress?.uploadId);
                                                 if (currentIndex > 0) {
                                                     switchToUpload(allUploads[currentIndex - 1].uploadId);
                                                 }
                                             }}
-                                            disabled={allUploads.findIndex(u => u.uploadId === progress?.uploadId) === 0}
-                                            style={{
-                                                padding: "4px 8px",
-                                                backgroundColor: "var(--background-secondary)",
-                                                border: "1px solid var(--background-modifier-accent)",
-                                                borderRadius: "4px",
-                                                color: "var(--interactive-normal)",
-                                                cursor: allUploads.findIndex(u => u.uploadId === progress?.uploadId) === 0 ? "not-allowed" : "pointer",
-                                                opacity: allUploads.findIndex(u => u.uploadId === progress?.uploadId) === 0 ? 0.5 : 1,
-                                                fontSize: "12px"
-                                            }}
+                                            disabled={isFirstUpload}
                                         >
                                             ←
                                         </button>
                                         <button
+                                            className="vc-bfu-nav-btn"
                                             onClick={e => {
                                                 e.stopPropagation();
-                                                const currentIndex = allUploads.findIndex(u => u.uploadId === progress?.uploadId);
                                                 if (currentIndex < allUploads.length - 1) {
                                                     switchToUpload(allUploads[currentIndex + 1].uploadId);
                                                 }
                                             }}
-                                            disabled={allUploads.findIndex(u => u.uploadId === progress?.uploadId) === allUploads.length - 1}
-                                            style={{
-                                                padding: "4px 8px",
-                                                backgroundColor: "var(--background-secondary)",
-                                                border: "1px solid var(--background-modifier-accent)",
-                                                borderRadius: "4px",
-                                                color: "var(--interactive-normal)",
-                                                cursor: allUploads.findIndex(u => u.uploadId === progress?.uploadId) === allUploads.length - 1 ? "not-allowed" : "pointer",
-                                                opacity: allUploads.findIndex(u => u.uploadId === progress?.uploadId) === allUploads.length - 1 ? 0.5 : 1,
-                                                fontSize: "12px"
-                                            }}
+                                            disabled={isLastUpload}
                                         >
                                             →
                                         </button>
@@ -589,6 +456,7 @@ export function UploadProgressBar() {
                                 {/* Cancel button */}
                                 {!isComplete && progress?.uploadId && (
                                     <button
+                                        className="vc-bfu-cancel-btn"
                                         disabled={isCancelling}
                                         onClick={async e => {
                                             e.stopPropagation();
@@ -606,35 +474,9 @@ export function UploadProgressBar() {
                                                 }
                                             }
                                         }}
-                                        style={{
-                                            padding: "4px 8px",
-                                            backgroundColor: "var(--background-secondary)",
-                                            border: "1px solid var(--status-danger)",
-                                            borderRadius: "4px",
-                                            cursor: isCancelling ? "not-allowed" : "pointer",
-                                            opacity: isCancelling ? 0.5 : 1,
-                                            display: "flex",
-                                            alignItems: "center",
-                                            justifyContent: "center",
-                                            color: "var(--status-danger)",
-                                            transition: "background-color 0.2s"
-                                        }}
-                                        onMouseEnter={e => {
-                                            e.currentTarget.style.backgroundColor = "var(--status-danger)";
-                                            e.currentTarget.style.color = "white";
-                                        }}
-                                        onMouseLeave={e => {
-                                            e.currentTarget.style.backgroundColor = "var(--background-secondary)";
-                                            e.currentTarget.style.color = "var(--status-danger)";
-                                        }}
                                         title="Cancel upload"
                                     >
-                                        <svg
-                                            width="16"
-                                            height="16"
-                                            viewBox="0 0 24 24"
-                                            fill="currentColor"
-                                        >
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                                             <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
                                         </svg>
                                     </button>
@@ -643,96 +485,56 @@ export function UploadProgressBar() {
                         </div>
 
                         {/* Progress bar */}
-                        <div
-                            style={{
-                                width: "100%",
-                                height: "12px",
-                                backgroundColor: "var(--background-secondary-alt)",
-                                borderRadius: "6px",
-                                overflow: "hidden",
-                                marginBottom: "8px",
-                                border: "1px solid var(--background-modifier-accent)",
-                                boxShadow: "inset 0 1px 3px rgba(0, 0, 0, 0.1)"
-                            }}
-                        >
+                        <div className="vc-bfu-expanded-track">
                             <div
-                                style={{
-                                    width: `${percent}%`,
-                                    height: "100%",
-                                    backgroundColor: isComplete ? "var(--green-360)" : "var(--brand-500)",
-                                    // Smooth transition over 1 second for visual continuity between updates
-                                    transition: "width 1s linear, background-color 0.3s ease",
-                                    boxShadow: isComplete ? "0 0 10px var(--green-360)" : "0 0 10px var(--brand-500)"
-                                }}
+                                className={`vc-bfu-expanded-fill ${isComplete ? "vc-bfu-progress-fill-complete" : "vc-bfu-progress-fill-active"}`}
+                                style={{ width: `${percent}%` }}
                             />
                         </div>
 
                         {/* Stats in one horizontal line */}
-                        <div style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "16px",
-                            fontSize: "12px",
-                            color: "var(--text-muted)"
-                        }}>
+                        <div className="vc-bfu-stats-row">
                             {/* Progress percentage */}
-                            <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                            <div className="vc-bfu-stat">
                                 <span>Progress:</span>
-                                <span style={{ color: "var(--header-primary)", fontWeight: 600 }}>
-                                    {percent.toFixed(1)}%
-                                </span>
+                                <span className="vc-bfu-stat-value">{percent.toFixed(1)}%</span>
                             </div>
 
                             {/* Separator */}
-                            <span style={{ color: "var(--text-muted)", opacity: 0.3 }}>•</span>
+                            <span className="vc-bfu-stat-separator">•</span>
 
                             {/* Speed */}
                             {!isComplete && (
                                 <>
-                                    <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                    <div className="vc-bfu-stat">
                                         <span>Speed:</span>
-                                        <span style={{ color: "var(--header-primary)", fontWeight: 600 }}>
-                                            {formatFileSize(speed)}/s
-                                        </span>
+                                        <span className="vc-bfu-stat-value">{formatFileSize(speed)}/s</span>
                                     </div>
-                                    <span style={{ color: "var(--text-muted)", opacity: 0.3 }}>•</span>
+                                    <span className="vc-bfu-stat-separator">•</span>
                                 </>
                             )}
 
                             {/* ETA */}
                             {!isComplete && (
                                 <>
-                                    <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                    <div className="vc-bfu-stat">
                                         <span>ETA:</span>
-                                        <span style={{ color: "var(--header-primary)", fontWeight: 600 }}>
-                                            {formatETA(eta)}
-                                        </span>
+                                        <span className="vc-bfu-stat-value">{formatETA(eta)}</span>
                                     </div>
-                                    <span style={{ color: "var(--text-muted)", opacity: 0.3 }}>•</span>
+                                    <span className="vc-bfu-stat-separator">•</span>
                                 </>
                             )}
 
                             {/* Data transferred */}
-                            <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                            <div className="vc-bfu-stat">
                                 <span>Transferred:</span>
-                                <span style={{ color: "var(--header-primary)", fontWeight: 600 }}>
-                                    {formatFileSize(transferred)} / {formatFileSize(total)}
-                                </span>
+                                <span className="vc-bfu-stat-value">{formatFileSize(transferred)} / {formatFileSize(total)}</span>
                             </div>
                         </div>
 
                         {/* File name */}
                         {progress?.fileName && (
-                            <div style={{
-                                marginTop: "8px",
-                                fontSize: "11px",
-                                color: "var(--text-muted)",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap"
-                            }}>
-                                {progress.fileName}
-                            </div>
+                            <div className="vc-bfu-filename">{progress.fileName}</div>
                         )}
                     </div>
                 )}

@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import "./styles.css";
+
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
 import { definePluginSettings } from "@api/Settings";
 import { Divider } from "@components/Divider";
@@ -16,17 +18,21 @@ import { Devs } from "@utils/constants";
 import { insertTextIntoChatInputBox, sendMessage } from "@utils/discord";
 import { Margins } from "@utils/margins";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
-import { findByPropsLazy } from "@webpack";
-import { Button, DraftType, Menu, PermissionsBits, PermissionStore, React, Select, SelectedChannelStore, showToast, TextInput, Toasts, UploadManager, useEffect, useState } from "@webpack/common";
+import { Button, createRoot, DraftType, Menu, PermissionsBits, PermissionStore, React, Select, SelectedChannelStore, showToast, TextInput, Toasts, UploadManager, useEffect, useState } from "@webpack/common";
 
 import { LoggingLevel, pluginLogger as log, setLoggingLevelProvider } from "./logging";
 import { UploadProgressBar } from "./renderer/components/UploadProgressBar";
-import { disableDragDropOverride, enableDragDropOverride, setNitroLimitChecker, setUploadFunction } from "./renderer/dragDrop";
+import { disableDragDropOverride, enableDragDropOverride, isForumOrSlashCommandContextForChannel, setNitroLimitChecker, setUploadFunction } from "./renderer/dragDrop";
 import { formatFileSize } from "./renderer/formatting";
 import { showUploadNotification } from "./renderer/notifications";
 import { clearAndForceHide, completeAndDispatch, completeUpload as completeUploadTracking, markDispatched, startProgressPolling, startUploadBatch, stopProgressPolling } from "./renderer/progress";
 
 const Native = VencordNative.pluginHelpers.BigFileUpload as PluginNative<typeof import("./native")>;
+
+// Check if native module is available (not available in browser extension)
+function isNativeAvailable(): boolean {
+    return Native != null && typeof Native.uploadFileBuffer === "function";
+}
 
 // Type for upload result from native functions
 interface UploadResult {
@@ -40,7 +46,6 @@ interface UploadResult {
     error?: string;
 }
 
-const OptionClasses = findByPropsLazy("optionName", "optionIcon", "optionLabel");
 
 // Progress tracking - use centralized module
 function generateUploadId(): string {
@@ -475,11 +480,39 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                 </>
             )}
             <FormSwitch
+                title="Disable Fallback Uploaders"
+                description="Only use your selected uploader. If it fails, the upload will fail instead of trying other services. Useful for custom uploaders."
+                value={settings.store.disableFallbacks === "Yes"}
+                onChange={(enabled: boolean) => updateSetting("disableFallbacks", enabled ? "Yes" : "No")}
+            />
+            <FormSwitch
                 title="Embed Video Files"
-                description="Wrap uploaded video file links with https://embeds.video/ to embed videos that Discord might not embed. Only applies to video files (mp4, webm, mkv, etc.)."
+                description="Wrap uploaded video file links with an embed service to embed videos that Discord might not embed. Only applies to video files (mp4, webm, mkv, etc.)."
                 value={settings.store.useEmbedsVideo === "Yes"}
                 onChange={(enabled: boolean) => updateSetting("useEmbedsVideo", enabled ? "Yes" : "No")}
             />
+            {settings.store.useEmbedsVideo === "Yes" && (
+                <>
+                    <Paragraph className={Margins.bottom8}>
+                        Choose which embed service to use for video files:
+                    </Paragraph>
+                    <Select
+                        className={Margins.bottom20}
+                        options={[
+                            { label: "embeddr.top (recommended)", value: "embeddr" },
+                            { label: "x266.mov/discord-embed", value: "x266" },
+                            { label: "discord.nfp.is", value: "nfp" },
+                            { label: "stolen.shoes", value: "stolen" },
+                        ]}
+                        placeholder="Choose an embed service..."
+                        select={value => updateSetting("embedService", value)}
+                        isSelected={value => value === (settings.store.embedService || "embeddr")}
+                        serialize={value => value}
+                        closeOnSelect={true}
+                        clearable={false}
+                    />
+                </>
+            )}
             <FormSwitch
                 title="Display Original Filename"
                 description="Format upload links as clickable text showing the original filename. Example: [vacation_video.mp4](link) instead of the raw link."
@@ -598,7 +631,7 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
 
                     <Heading tag="h5">Custom Uploader</Heading>
                     <Paragraph className={Margins.bottom8}>
-                        Configure your own upload service. Compatible with ShareX custom uploaders and can bypass CSP restrictions.
+                        Configure your own upload service. Compatible with ShareX custom uploaders and can bypass CSP restrictions. This uploader is exclusive (no fallbacks to other services).
                     </Paragraph>
 
                     <Heading tag="h5">Uploader Name</Heading>
@@ -765,7 +798,7 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
     );
 }
 
-const settings = definePluginSettings({
+export const settings = definePluginSettings({
     fileUploader: {
         type: OptionType.SELECT,
         options: [
@@ -924,7 +957,18 @@ const settings = definePluginSettings({
             { label: "Yes", value: "Yes", default: true },
             { label: "No", value: "No" },
         ],
-        description: "Wrap uploaded video URLs with embeds.video for better embedding",
+        description: "Wrap uploaded video URLs with an embed service for better embedding",
+        hidden: true
+    },
+    embedService: {
+        type: OptionType.SELECT,
+        options: [
+            { label: "embeddr.top", value: "embeddr", default: true },
+            { label: "x266.mov", value: "x266" },
+            { label: "discord.nfp.is", value: "nfp" },
+            { label: "stolen.shoes", value: "stolen" },
+        ],
+        description: "Which embed service to use for video files",
         hidden: true
     },
     dragAndDropEnabled: {
@@ -962,6 +1006,15 @@ const settings = definePluginSettings({
             { label: "Nitro (500MB)", value: "full" },
         ],
         description: "Your Discord Nitro subscription tier",
+        hidden: true
+    },
+    disableFallbacks: {
+        type: OptionType.SELECT,
+        options: [
+            { label: "Yes", value: "Yes" },
+            { label: "No", value: "No", default: true },
+        ],
+        description: "Disable fallback uploaders - only use your selected uploader",
         hidden: true
     },
     loggingLevel: {
@@ -1013,6 +1066,14 @@ function getNitroLimit(): number {
 }
 
 /**
+ * Parse upload timeout from settings; never pass NaN to native (req.setTimeout throws).
+ */
+function getUploadTimeoutMs(): number {
+    const t = parseInt(settings.store.uploadTimeout || "300000", 10);
+    return Number.isFinite(t) && t > 0 ? t : 300000;
+}
+
+/**
  * Check if a file should use Discord's native upload (under Nitro limit)
  */
 function shouldUseNativeUpload(fileSize: number): boolean {
@@ -1020,6 +1081,23 @@ function shouldUseNativeUpload(fileSize: number): boolean {
         return false; // User wants BigFileUpload to handle everything
     }
     return fileSize <= getNitroLimit();
+}
+
+/** Draft type for first message when creating a thread (may not be on webpack DraftType) */
+const FirstThreadMessageDraftType = 2 as const;
+
+/**
+ * Clear upload UI for all draft types (channel, thread creation, slash command)
+ * so we don't leave stale state when handling uploads in any context.
+ */
+function clearAllDraftTypes(channelId: string) {
+    try {
+        UploadManager.clearAll(channelId, DraftType.ChannelMessage);
+        UploadManager.clearAll(channelId, DraftType.SlashCommand);
+        UploadManager.clearAll(channelId, (DraftType as Record<string, number>).FirstThreadMessage ?? FirstThreadMessageDraftType);
+    } catch (clearError) {
+        log.warn("Failed to clear native upload UI:", clearError);
+    }
 }
 
 // Uploaders that don't support EXE files
@@ -1087,6 +1165,11 @@ async function handleSmallFileUpload(file: File, skipBatchStart = false) {
         // Log upload start (Important Info level)
         log.info(`Uploading ${file.name} (${formatFileSize(file.size)}) via ${effectiveUploader}`);
 
+        // Check if native module is available
+        if (!isNativeAvailable()) {
+            throw new Error("BigFileUpload requires the desktop app. Browser extension is not supported.");
+        }
+
         // Secure upload: send buffer to main process (no file paths exposed)
         log.debug("Calling Native.uploadFileBuffer...");
         const result = await Native.uploadFileBuffer(
@@ -1109,8 +1192,10 @@ async function handleSmallFileUpload(file: File, skipBatchStart = false) {
                 customUploaderRequestMethod: settings.store.customUploaderRequestMethod,
                 customUploaderBodyType: settings.store.customUploaderBodyType,
                 loggingLevel: (settings.store.loggingLevel as LoggingLevel) ?? "errors",
-                uploadTimeout: parseInt(settings.store.uploadTimeout || "300000", 10),
-				useEmbedsVideo: settings.store.useEmbedsVideo
+                uploadTimeout: getUploadTimeoutMs(),
+                useEmbedsVideo: settings.store.useEmbedsVideo,
+                embedService: settings.store.embedService,
+                disableFallbacks: settings.store.disableFallbacks === "Yes"
             }
         );
 
@@ -1118,14 +1203,7 @@ async function handleSmallFileUpload(file: File, skipBatchStart = false) {
         log.debug("Upload result", result);
 
         // Ensure Discord's native upload UI is cleared so the progress bar disappears
-        if (channelId) {
-            try {
-                UploadManager.clearAll(channelId, DraftType.ChannelMessage);
-                UploadManager.clearAll(channelId, DraftType.SlashCommand);
-            } catch (clearError) {
-                log.warn("Failed to clear native upload UI:", clearError);
-            }
-        }
+        if (channelId) clearAllDraftTypes(channelId);
 
         if (!result.success) {
             // Complete tracking even on failure (to clear progress bar)
@@ -1195,14 +1273,7 @@ async function handleSmallFileUpload(file: File, skipBatchStart = false) {
 
         // Clear Discord's native upload UI on error too
         const channelId = SelectedChannelStore.getChannelId();
-        if (channelId) {
-            try {
-                UploadManager.clearAll(channelId, DraftType.ChannelMessage);
-                UploadManager.clearAll(channelId, DraftType.SlashCommand);
-            } catch (clearError) {
-                log.warn("Failed to clear native upload UI on error:", clearError);
-            }
-        }
+        if (channelId) clearAllDraftTypes(channelId);
     }
 }
 
@@ -1227,6 +1298,13 @@ async function triggerFileUpload() {
         });
         log.info(`Manual uploader: ${selectedUploader}`);
 
+        // Check if native module is available
+        if (!isNativeAvailable()) {
+            showUploadNotification("BigFileUpload requires the desktop app. Browser extension is not supported.", Toasts.Type.FAILURE);
+            clearAndForceHide();
+            return;
+        }
+
         // Secure upload: everything happens in main process (unlimited file size)
         const result = await Native.pickAndUploadFile({
             fileUploader: selectedUploader,
@@ -1246,9 +1324,11 @@ async function triggerFileUpload() {
             loggingLevel: (settings.store.loggingLevel as LoggingLevel) ?? "errors",
             respectNitroLimit: settings.store.respectNitroLimit === "Yes",
             nitroTier: settings.store.nitroType,
-            uploadTimeout: parseInt(settings.store.uploadTimeout || "300000", 10),
-			useEmbedsVideo: settings.store.useEmbedsVideo
-        }) as UploadResult & { useNativeUpload?: boolean; buffer?: ArrayBuffer };
+            uploadTimeout: getUploadTimeoutMs(),
+            useEmbedsVideo: settings.store.useEmbedsVideo,
+            embedService: settings.store.embedService,
+            disableFallbacks: settings.store.disableFallbacks === "Yes"
+        }) as UploadResult & { useNativeUpload?: boolean; buffer?: ArrayBuffer; };
 
         // If file is under Nitro limit, use Discord's native upload
         if (result.useNativeUpload && result.buffer && result.fileName) {
@@ -1291,14 +1371,7 @@ async function triggerFileUpload() {
             }
 
             showUploadNotification(`Upload failed: ${result.error}`, Toasts.Type.FAILURE);
-            if (channelId) {
-                try {
-                    UploadManager.clearAll(channelId, DraftType.ChannelMessage);
-                    UploadManager.clearAll(channelId, DraftType.SlashCommand);
-                } catch (clearError) {
-                    log.warn("Failed to clear native upload UI:", clearError);
-                }
-            }
+            if (channelId) clearAllDraftTypes(channelId);
             return;
         }
 
@@ -1325,14 +1398,7 @@ async function triggerFileUpload() {
             }
         }
 
-        if (channelId) {
-            try {
-                UploadManager.clearAll(channelId, DraftType.ChannelMessage);
-                UploadManager.clearAll(channelId, DraftType.SlashCommand);
-            } catch (clearError) {
-                log.warn("Failed to clear native upload UI:", clearError);
-            }
-        }
+        if (channelId) clearAllDraftTypes(channelId);
     } catch (error) {
         log.error(`Manual upload failed (uploader: ${settings.store.fileUploader || "Catbox"}):`, error);
         showUploadNotification(`Upload failed unexpectedly: ${getErrorMessage(error)}`, Toasts.Type.FAILURE);
@@ -1343,16 +1409,11 @@ async function triggerFileUpload() {
 
         // Clear Discord's native upload UI on error too
         const channelId = SelectedChannelStore.getChannelId();
-        if (channelId) {
-            try {
-                UploadManager.clearAll(channelId, DraftType.ChannelMessage);
-                UploadManager.clearAll(channelId, DraftType.SlashCommand);
-            } catch (clearError) {
-                log.warn("Failed to clear native upload UI on error:", clearError);
-            }
-        }
+        if (channelId) clearAllDraftTypes(channelId);
     }
 }
+
+const Externalicon = () => <OpenExternalIcon height={24} width={24} />;
 
 const ctxMenuPatch: NavContextMenuPatchCallback = (children, props) => {
     if (props.channel.guild_id && !PermissionStore.can(PermissionsBits.SEND_MESSAGES, props.channel)) return;
@@ -1360,12 +1421,12 @@ const ctxMenuPatch: NavContextMenuPatchCallback = (children, props) => {
     children.splice(1, 0,
         <Menu.MenuItem
             id="upload-big-file"
-            label={
-                <div className={OptionClasses.optionLabel}>
-                    <OpenExternalIcon className={OptionClasses.optionIcon} height={24} width={24} />
-                    <div className={OptionClasses.optionName}>Upload a Big File</div>
-                </div>
-            }
+            iconLeft={Externalicon}
+            leadingAccessory={{
+                type: "icon",
+                icon: Externalicon
+            }}
+            label="Upload a Big File"
             action={triggerFileUpload}
         />
     );
@@ -1377,34 +1438,29 @@ async function handlePaste(e: ClipboardEvent) {
     if (!files || files.length === 0) return;
 
     const fileArray = Array.from(files);
+    const channelId = SelectedChannelStore.getChannelId();
 
-    // CRITICAL: Prevent Discord from also processing this paste event
-    e.preventDefault();
-    e.stopPropagation();
-    e.stopImmediatePropagation();
-
-    // Check if ALL files are under Nitro limit - if so, use Discord's native UploadManager
-    const allUnderNitroLimit = fileArray.every(file => shouldUseNativeUpload(file.size));
-    if (allUnderNitroLimit) {
-        log.debug("All files under Nitro limit, using Discord's native upload", {
-            nitroLimit: formatFileSize(getNitroLimit()),
-            files: fileArray.map(f => ({ name: f.name, size: formatFileSize(f.size) }))
-        });
-
-        const channelId = SelectedChannelStore.getChannelId();
-        if (channelId) {
-            // Use Discord's native UploadManager to handle the files
-            UploadManager.addFiles({
-                channelId,
-                draftType: DraftType.ChannelMessage,
-                files: fileArray.map(file => ({ file, platform: 1 })),
-                showLargeMessageDialog: false
-            });
-        }
+    // Do not intercept when user is pasting into forum post or slash command input
+    if (isForumOrSlashCommandContextForChannel(channelId)) {
+        log.debug("Paste in forum/slash context, not intercepting");
         return;
     }
 
-    const channelId = SelectedChannelStore.getChannelId();
+    // Check if ALL files are under Nitro limit - if so, do NOT intercept; let Discord handle
+    // so that uploads work in thread creation and slash command context (correct draft type).
+    const allUnderNitroLimit = fileArray.every(file => shouldUseNativeUpload(file.size));
+    if (allUnderNitroLimit) {
+        log.debug("All files under Nitro limit, not intercepting paste so Discord handles natively", {
+            nitroLimit: formatFileSize(getNitroLimit()),
+            files: fileArray.map(f => ({ name: f.name, size: formatFileSize(f.size) }))
+        });
+        return;
+    }
+
+    // At least one file exceeds Nitro limit - intercept and handle with BigFileUpload
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
 
     if (!channelId) {
         showToast("Please select a channel before uploading", Toasts.Type.FAILURE);
@@ -1412,8 +1468,7 @@ async function handlePaste(e: ClipboardEvent) {
     }
 
     // Clear Discord's native upload modal immediately (same as drag-and-drop)
-    UploadManager.clearAll(channelId, DraftType.ChannelMessage);
-    UploadManager.clearAll(channelId, DraftType.SlashCommand);
+    clearAllDraftTypes(channelId);
 
     log.info("Paste intercepted (files exceed Nitro limit)");
     log.debug("Paste handler received files:", fileArray.map(file => ({
@@ -1443,6 +1498,96 @@ setUploadFunction(handleSmallFileUpload);
 setNitroLimitChecker(shouldUseNativeUpload);
 
 
+// Progress bar DOM injection state
+let progressBarContainer: HTMLDivElement | null = null;
+let progressBarRoot: ReturnType<typeof createRoot> | null = null;
+let domObserver: MutationObserver | null = null;
+
+/**
+ * Find the chat form container and inject progress bar above it
+ */
+function injectProgressBar() {
+    // Don't inject if already exists
+    if (document.getElementById("bigfileupload-progress-container")) {
+        return;
+    }
+
+    // Find the form element in the chat area
+    // Try multiple selectors for robustness
+    const form = document.querySelector('form[class*="form"]') as HTMLElement;
+    if (!form) {
+        log.debug("Chat form not found, will retry on mutation");
+        return;
+    }
+
+    // Create container for the progress bar
+    progressBarContainer = document.createElement("div");
+    progressBarContainer.id = "bigfileupload-progress-container";
+    progressBarContainer.style.cssText = "width: 100%; position: relative;";
+
+    // Insert before the form
+    form.parentNode?.insertBefore(progressBarContainer, form);
+
+    // Create React root and render the progress bar
+    progressBarRoot = createRoot(progressBarContainer);
+    progressBarRoot.render(React.createElement(UploadProgressBar));
+
+    log.debug("Progress bar injected into DOM");
+}
+
+/**
+ * Remove the progress bar from the DOM
+ */
+function removeProgressBar() {
+    if (progressBarRoot) {
+        progressBarRoot.unmount();
+        progressBarRoot = null;
+    }
+    if (progressBarContainer) {
+        progressBarContainer.remove();
+        progressBarContainer = null;
+    }
+}
+
+/**
+ * Start observing DOM for chat form changes (channel switches etc.)
+ */
+function startDomObserver() {
+    if (domObserver) return;
+
+    // Initial injection
+    injectProgressBar();
+
+    // Observe for DOM changes to re-inject when needed
+    domObserver = new MutationObserver(() => {
+        // Check if our container was removed (channel switch, etc.)
+        if (!document.getElementById("bigfileupload-progress-container")) {
+            injectProgressBar();
+        }
+    });
+
+    // Observe the main app container for changes
+    const appContainer = document.querySelector('[class*="app-"]') || document.body;
+    domObserver.observe(appContainer, {
+        childList: true,
+        subtree: true
+    });
+
+    log.debug("DOM observer started for progress bar injection");
+}
+
+/**
+ * Stop the DOM observer
+ */
+function stopDomObserver() {
+    if (domObserver) {
+        domObserver.disconnect();
+        domObserver = null;
+    }
+    removeProgressBar();
+    log.debug("DOM observer stopped");
+}
+
 export default definePlugin({
     name: "BigFileUpload",
     description: "Bypass Discord's upload limit by uploading to external file uploaders via drag-drop, paste, or the Upload button.",
@@ -1450,25 +1595,14 @@ export default definePlugin({
     settings,
     dependencies: ["CommandsAPI"],
 
-
-    patches: [
-        {
-            find: "formWithLoadedChatInput",
-            replacement: {
-                // Insert progress bar before the form
-                // The actual webpack code: (0,i.jsxs)("form",{ref:this.inputFormRef,onSubmit:e4,className:
-                match: /\(0,i\.jsxs\)\("form",\{ref:this\.inputFormRef/,
-                replace: '$self.renderProgressBar(),(0,i.jsxs)("form",{ref:this.inputFormRef'
-            }
-        }
-    ],
-
-
     start() {
         // Start progress polling for the progress bar
         startProgressPolling();
         startNativeNotificationPolling();
         log.debug("Progress polling initialized from plugin start");
+
+        // Start DOM observer to inject progress bar
+        startDomObserver();
 
         // Enable drag-and-drop if enabled in settings
         if (settings.store.dragAndDropEnabled !== "No") {
@@ -1491,6 +1625,9 @@ export default definePlugin({
         // Stop progress polling to prevent memory leaks
         stopProgressPolling();
 
+        // Stop DOM observer and remove progress bar
+        stopDomObserver();
+
         // Disable drag-and-drop
         disableDragDropOverride();
 
@@ -1499,11 +1636,6 @@ export default definePlugin({
         log.info("BigFileUpload disabled");
 
         stopNativeNotificationPolling();
-    },
-
-    // Following SpotifyControls pattern - render the component directly
-    renderProgressBar() {
-        return React.createElement(UploadProgressBar);
     },
 
     contextMenus: {

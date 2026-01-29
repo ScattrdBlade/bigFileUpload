@@ -48,19 +48,12 @@ export function ProgressNotification({ onComplete }: { onComplete?: () => void; 
     // Show completion message
     if (isComplete) {
         return (
-            <div style={{ padding: "8px 0" }}>
-                <div style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    fontSize: "14px",
-                    fontWeight: 600,
-                    color: "var(--green-360)"
-                }}>
+            <div className="vc-bfu-notification">
+                <div className="vc-bfu-notification-complete">
                     <span>✓</span>
                     <span>Upload Complete!</span>
                 </div>
-                <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "4px" }}>
+                <div className="vc-bfu-notification-dismiss">
                     This notification will close automatically
                 </div>
             </div>
@@ -78,26 +71,18 @@ export function ProgressNotification({ onComplete }: { onComplete?: () => void; 
     const progressBarWidth = Math.min(progress.percent, 100);
 
     return (
-        <div style={{ padding: "8px 0" }}>
-            <div style={{ marginBottom: "6px", fontSize: "14px", fontWeight: 600 }}>
+        <div className="vc-bfu-notification">
+            <div className="vc-bfu-notification-filename">
                 {progress.fileName}
             </div>
-            <div style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "6px" }}>
+            <div className="vc-bfu-notification-stats">
                 {percent}% • {loadedMB}MB / {totalMB}MB • {speedMBps} MB/s • ETA: {etaFormatted}
             </div>
-            <div style={{
-                width: "100%",
-                height: "6px",
-                backgroundColor: "var(--background-secondary)",
-                borderRadius: "3px",
-                overflow: "hidden"
-            }}>
-                <div style={{
-                    width: `${progressBarWidth}%`,
-                    height: "100%",
-                    backgroundColor: "var(--brand-500)",
-                    transition: "width 0.3s ease"
-                }} />
+            <div className="vc-bfu-notification-track">
+                <div
+                    className="vc-bfu-notification-fill"
+                    style={{ width: `${progressBarWidth}%` }}
+                />
             </div>
         </div>
     );

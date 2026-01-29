@@ -5,15 +5,16 @@
  */
 
 import { showNotification } from "@api/Notifications";
-import { Settings } from "@api/Settings";
 import { showToast, Toasts } from "@webpack/common";
+
+import { settings } from "../index";
 
 /**
  * Show upload notification or toast based on user preference
  * Consolidated from index.tsx and UploadProgressBar.tsx to avoid duplication
  */
 export function showUploadNotification(message: string, type: any = Toasts.Type.MESSAGE) {
-    const useNotifications = Settings.plugins.BigFileUpload?.useNotifications === "Yes";
+    const useNotifications = settings.store.useNotifications === "Yes";
 
     if (useNotifications) {
         const color = type === Toasts.Type.FAILURE

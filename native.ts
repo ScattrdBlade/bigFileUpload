@@ -44,9 +44,9 @@ const MAX_RESPONSE_SIZE = 1 * 1024 * 1024;
 
 // Nitro upload limits (used to decide whether to use Discord's native upload)
 const NITRO_LIMITS: Record<string, number> = {
-    none: 10 * 1024 * 1024,     // 10MB for no Nitro
-    basic: 50 * 1024 * 1024,    // 50MB for Nitro Basic
-    full: 500 * 1024 * 1024,    // 500MB for full Nitro
+    none: 10 * 1024 * 1024, // 10MB for no Nitro
+    basic: 50 * 1024 * 1024, // 50MB for Nitro Basic
+    full: 500 * 1024 * 1024, // 500MB for full Nitro
 };
 
 function isExeFile(fileName: string): boolean {
@@ -59,6 +59,31 @@ function getEffectiveUploader(fileName: string, selectedUploader: string): strin
         return EXE_FALLBACK_UPLOADER;
     }
     return selectedUploader;
+}
+
+/** Ensure timeout is a valid positive number (req.setTimeout throws if NaN). Default 5 min. */
+function safeUploadTimeout(ms: number | undefined): number {
+    const n = Number(ms);
+    return Number.isFinite(n) && n > 0 ? n : 300000;
+}
+
+/**
+ * Get the embed service URL prefix based on user's selected service
+ * @param service - The embed service identifier from settings
+ * @returns The full URL prefix to prepend to video URLs
+ */
+function getEmbedServiceUrl(service: string | undefined): string {
+    switch (service) {
+        case "x266":
+            return "https://x266.mov/discord-embed/";
+        case "nfp":
+            return "https://discord.nfp.is/";
+        case "stolen":
+            return "https://stolen.shoes/";
+        case "embeddr":
+        default:
+            return "https://embeddr.top/";
+    }
 }
 
 /**
@@ -247,7 +272,7 @@ function navigateJsonPath(obj: any, pathParts: string[]): any {
         }
 
         // Handle array index notation: "files[0]" -> access files then index 0
-        const arrayMatch = part.match(/^([^\[]+)\[(\d+)\]$/);
+        const arrayMatch = part.match(/^([^[]+)\[(\d+)\]$/);
         if (arrayMatch) {
             const [, key, index] = arrayMatch;
             if (key) {
@@ -312,7 +337,7 @@ function extractUrlFromResponse(responseText: string, responseType: string, urlP
                 return resolveUrl(parsed, baseUrl);
             }
 
-            throw new Error(`Could not find URL in JSON response. Try specifying a URL path.`);
+            throw new Error("Could not find URL in JSON response. Try specifying a URL path.");
         } catch (e) {
             if (responseType === "JSON") {
                 throw e;
@@ -2087,7 +2112,7 @@ export async function uploadFileCustomNative(
             );
         } else {
             // Multipart form data upload (default)
-            nativeLog.info(`[BigFileUpload] Custom uploader using POST with multipart form data`);
+            nativeLog.info("[BigFileUpload] Custom uploader using POST with multipart form data");
 
             // Filter out empty keys
             const fields: Record<string, string> = {};
@@ -2168,9 +2193,12 @@ export async function uploadFileBuffer(
         loggingLevel?: LoggingLevel;
         uploadTimeout?: number;
         useEmbedsVideo?: string;
+        embedService?: string;
+        disableFallbacks?: boolean;
     }
 ): Promise<{ success: boolean; url?: string; fileName?: string; fileSize?: number; uploadId?: string; error?: string; actualUploader?: string; attemptedUploaders?: string[]; }> {
     updateLoggingLevel(uploaderSettings.loggingLevel);
+    const uploadTimeout = safeUploadTimeout(uploaderSettings.uploadTimeout);
     nativeLog.info(`[BigFileUpload NATIVE] uploadFileBuffer called for: ${fileName} (type: ${mimeType})`);
     nativeLog.info(`[BigFileUpload NATIVE] Received uploader setting: "${uploaderSettings.fileUploader}"`);
 
@@ -2199,19 +2227,26 @@ export async function uploadFileBuffer(
         // Build the list of uploaders to try (primary + fallbacks)
         const uploadersToTry = [primaryUploader];
 
-        // IMPORTANT: Don't skip Custom in the primary position, only skip it as a fallback
-        // Also skip EXE-blocked uploaders for EXE files
-        const isExe = isExeFile(fileName);
-        for (const fallback of FALLBACK_UPLOADERS) {
-            // Skip duplicates, skip Custom as a fallback (not as primary), and skip EXE-blocked uploaders for EXE files
-            if (fallback !== primaryUploader && fallback !== "Custom" && !(isExe && EXE_BLOCKED_UPLOADERS.includes(fallback))) {
-                uploadersToTry.push(fallback);
-            }
-        }
+        // Custom uploaders are EXCLUSIVE - no fallbacks
+        // Users who set up custom uploaders want ONLY that uploader used
+        const isExclusiveUploader = primaryUploader === "Custom";
 
-        // If primary is Custom and it's the only one, add a fallback
-        if (primaryUploader === "Custom" && uploadersToTry.length === 1) {
-            uploadersToTry.push(isExe ? "GoFile" : "Catbox");
+        // Check if user has disabled fallbacks globally
+        const fallbacksDisabled = uploaderSettings.disableFallbacks === true;
+
+        if (fallbacksDisabled) {
+            nativeLog.info(`[BigFileUpload] Fallbacks disabled by user setting - only using ${primaryUploader}`);
+        } else if (!isExclusiveUploader) {
+            // Add fallbacks for standard uploaders
+            const isExe = isExeFile(fileName);
+            for (const fallback of FALLBACK_UPLOADERS) {
+                // Skip duplicates, skip Custom as fallback, and skip EXE-blocked uploaders for EXE files
+                if (fallback !== primaryUploader && !(isExe && EXE_BLOCKED_UPLOADERS.includes(fallback))) {
+                    uploadersToTry.push(fallback);
+                }
+            }
+        } else {
+            nativeLog.info(`[BigFileUpload] ${primaryUploader} is exclusive - no fallback uploaders will be used`);
         }
 
         nativeLog.info(`[BigFileUpload] Will try uploaders in order: ${uploadersToTry.join(", ")}`);
@@ -2249,7 +2284,7 @@ export async function uploadFileBuffer(
                         fileName,
                         uploaderSettings.gofileToken,
                         isBackgroundRetry ? undefined : uploadId,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
                     if (gofileResult.status === "ok" && gofileResult.data) {
                         const downloadUrl = gofileResult.data.downloadPage || (gofileResult.data.code ? `https://gofile.io/d/${gofileResult.data.code}` : undefined);
@@ -2271,7 +2306,7 @@ export async function uploadFileBuffer(
                         mimeType || "application/octet-stream",
                         uploaderSettings.catboxUserHash || "",
                         isBackgroundRetry ? undefined : uploadId,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
                     break;
                 }
@@ -2283,7 +2318,7 @@ export async function uploadFileBuffer(
                         mimeType || "application/octet-stream",
                         uploaderSettings.litterboxTime || "1h",
                         isBackgroundRetry ? undefined : uploadId,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
                     break;
                 }
@@ -2293,7 +2328,7 @@ export async function uploadFileBuffer(
                         buffer,
                         fileName,
                         isBackgroundRetry ? undefined : uploadId,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
                     break;
                 }
@@ -2304,7 +2339,7 @@ export async function uploadFileBuffer(
                         fileName,
                         uploaderSettings.zeroX0Expires,
                         isBackgroundRetry ? undefined : uploadId,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
                     break;
                 }
@@ -2314,7 +2349,7 @@ export async function uploadFileBuffer(
                         buffer,
                         fileName,
                         isBackgroundRetry ? undefined : uploadId,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
                     break;
                 }
@@ -2324,7 +2359,7 @@ export async function uploadFileBuffer(
                         buffer,
                         fileName,
                         isBackgroundRetry ? undefined : uploadId,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
                     break;
                 }
@@ -2334,7 +2369,7 @@ export async function uploadFileBuffer(
                         buffer,
                         fileName,
                         isBackgroundRetry ? undefined : uploadId,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
                     break;
                 }
@@ -2363,7 +2398,7 @@ export async function uploadFileBuffer(
                         uploadId,
                         uploaderSettings.customUploaderRequestMethod,
                         uploaderSettings.customUploaderBodyType,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
                     break;
                 }
@@ -2380,7 +2415,7 @@ export async function uploadFileBuffer(
         };
 
         // Track background retry promises: { uploader, promise }
-        const backgroundRetries: Array<{ uploader: string; promise: Promise<{ url: string; uploader: string } | null> }> = [];
+        const backgroundRetries: Array<{ uploader: string; promise: Promise<{ url: string; uploader: string; } | null>; }> = [];
 
         let lastError: Error | null = null;
         const attemptedUploaders: string[] = [];
@@ -2405,8 +2440,8 @@ export async function uploadFileBuffer(
                     nativeLog.info(`[BigFileUpload] ✅ Background retry succeeded with ${backgroundWinner.uploader}!`);
                     let finalUrl = backgroundWinner.url;
                     if (uploaderSettings.useEmbedsVideo === "Yes") {
-						finalUrl = "https://embeds.video/" + uploadResult;
-					}
+                        finalUrl = getEmbedServiceUrl(uploaderSettings.embedService) + backgroundWinner.url;
+                    }
                     if (uploaderSettings.autoFormat === "Yes") {
                         finalUrl = `[${fileName}](${finalUrl})`;
                     }
@@ -2429,8 +2464,8 @@ export async function uploadFileBuffer(
                 // Format URL if requested
                 let finalUrl = uploadResult;
                 if (uploaderSettings.useEmbedsVideo === "Yes") {
-					finalUrl = "https://embeds.video/" + uploadResult;
-				}
+                    finalUrl = getEmbedServiceUrl(uploaderSettings.embedService) + uploadResult;
+                }
 
                 if (uploaderSettings.autoFormat === "Yes") {
                     finalUrl = `[${fileName}](${finalUrl})`;
@@ -2494,7 +2529,7 @@ export async function uploadFileBuffer(
                 // Start background retry for this failed uploader (only once, not for Custom)
                 if (uploader !== "Custom" && !backgroundRetries.some(r => r.uploader === uploader)) {
                     nativeLog.info(`[BigFileUpload] Starting background retry for ${uploader}`);
-                    const retryPromise = (async (): Promise<{ url: string; uploader: string } | null> => {
+                    const retryPromise = (async (): Promise<{ url: string; uploader: string; } | null> => {
                         // Small delay to let the next primary uploader get a head start
                         await new Promise(r => setTimeout(r, 1000));
                         try {
@@ -2548,8 +2583,8 @@ export async function uploadFileBuffer(
                         nativeLog.info(`[BigFileUpload] ✅ Background retry saved the day with ${finalCheck.uploader}!`);
                         let finalUrl = finalCheck.url;
                         if (uploaderSettings.useEmbedsVideo === "Yes") {
-						    finalUrl = "https://embeds.video/" + uploadResult;
-					    }
+                            finalUrl = getEmbedServiceUrl(uploaderSettings.embedService) + finalCheck.url;
+                        }
                         if (uploaderSettings.autoFormat === "Yes") {
                             finalUrl = `[${fileName}](${finalUrl})`;
                         }
@@ -2617,9 +2652,12 @@ export async function pickAndUploadFile(
         nitroTier?: string;
         uploadTimeout?: number;
         useEmbedsVideo?: string;
+        embedService?: string;
+        disableFallbacks?: boolean;
     }
 ): Promise<{ success: boolean; url?: string; fileName?: string; fileSize?: number; uploadId?: string; error?: string; actualUploader?: string; attemptedUploaders?: string[]; useNativeUpload?: boolean; buffer?: ArrayBuffer; }> {
     updateLoggingLevel(uploaderSettings.loggingLevel);
+    const uploadTimeout = safeUploadTimeout(uploaderSettings.uploadTimeout);
     // Step 1: Show OS file picker dialog (user explicitly selects file)
     const browserWindow = BrowserWindow.fromWebContents(event.sender);
     const dialogOptions: Electron.OpenDialogOptions = {
@@ -2681,10 +2719,23 @@ export async function pickAndUploadFile(
     // Skip EXE-blocked uploaders for EXE files
     const isExe = isExeFile(fileName);
     const uploadersToTry = [primaryUploader];
-    for (const fallback of FALLBACK_UPLOADERS) {
-        if (fallback !== primaryUploader && fallback !== "Custom" && !(isExe && EXE_BLOCKED_UPLOADERS.includes(fallback))) {
-            uploadersToTry.push(fallback);
+
+    // Custom uploaders are EXCLUSIVE - no fallbacks
+    const isExclusiveUploader = primaryUploader === "Custom";
+
+    // Check if user has disabled fallbacks globally
+    const fallbacksDisabled = uploaderSettings.disableFallbacks === true;
+
+    if (fallbacksDisabled) {
+        nativeLog.info(`[BigFileUpload] Fallbacks disabled by user setting - only using ${primaryUploader}`);
+    } else if (!isExclusiveUploader) {
+        for (const fallback of FALLBACK_UPLOADERS) {
+            if (fallback !== primaryUploader && fallback !== "Custom" && !(isExe && EXE_BLOCKED_UPLOADERS.includes(fallback))) {
+                uploadersToTry.push(fallback);
+            }
         }
+    } else {
+        nativeLog.info(`[BigFileUpload] ${primaryUploader} is exclusive - no fallback uploaders will be used`);
     }
 
     nativeLog.info(`[BigFileUpload] Will try uploaders in order: ${uploadersToTry.join(", ")}`);
@@ -2735,7 +2786,7 @@ export async function pickAndUploadFile(
                         fileName,
                         uploaderSettings.gofileToken,
                         uploadId,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
 
                     if (gofileResult.status === "ok" && gofileResult.data) {
@@ -2761,7 +2812,7 @@ export async function pickAndUploadFile(
                         "",
                         uploaderSettings.catboxUserHash || "",
                         uploadId,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
                     uploadResult = catboxResult;
                     break;
@@ -2776,7 +2827,7 @@ export async function pickAndUploadFile(
                         "",
                         uploaderSettings.litterboxTime || "1h",
                         uploadId,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
                     uploadResult = litterboxResult;
                     break;
@@ -2789,7 +2840,7 @@ export async function pickAndUploadFile(
                         filePath,
                         fileName,
                         uploadId,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
                     uploadResult = tempShResult;
                     break;
@@ -2803,7 +2854,7 @@ export async function pickAndUploadFile(
                         fileName,
                         uploaderSettings.zeroX0Expires,
                         uploadId,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
                     uploadResult = zeroX0StResult;
                     break;
@@ -2816,7 +2867,7 @@ export async function pickAndUploadFile(
                         filePath,
                         fileName,
                         uploadId,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
                     uploadResult = tmpFilesResult;
                     break;
@@ -2829,7 +2880,7 @@ export async function pickAndUploadFile(
                         filePath,
                         fileName,
                         uploadId,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
                     uploadResult = filebinResult;
                     break;
@@ -2842,7 +2893,7 @@ export async function pickAndUploadFile(
                         filePath,
                         fileName,
                         uploadId,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
                     uploadResult = buzzheavierResult;
                     break;
@@ -2876,7 +2927,7 @@ export async function pickAndUploadFile(
                         uploadId,
                         uploaderSettings.customUploaderRequestMethod,
                         uploaderSettings.customUploaderBodyType,
-                        uploaderSettings.uploadTimeout
+                        uploadTimeout
                     );
                     uploadResult = customResult;
                     break;
@@ -2895,8 +2946,8 @@ export async function pickAndUploadFile(
             // Format URL if requested
             let finalUrl = uploadResult;
             if (uploaderSettings.useEmbedsVideo === "Yes") {
-				finalUrl = "https://embeds.video/" + uploadResult;
-			}
+                finalUrl = getEmbedServiceUrl(uploaderSettings.embedService) + uploadResult;
+            }
 
             if (uploaderSettings.autoFormat === "Yes") {
                 finalUrl = `[${fileName}](${finalUrl})`;

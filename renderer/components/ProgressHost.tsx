@@ -126,11 +126,7 @@ function injectProgressBar() {
     // Create container for progress bar
     progressBarContainer = document.createElement("div");
     progressBarContainer.id = "vc-bigfileupload-progress-bar";
-    progressBarContainer.style.cssText = `
-        position: relative;
-        box-sizing: border-box;
-        z-index: 10;
-    `;
+    progressBarContainer.className = "vc-bfu-progress-container";
 
     // Set initial dimensions
     updateProgressBarDimensions();

@@ -46,6 +46,11 @@ export let completedFiles = 0;
 // Reference to Native helpers
 const Native = VencordNative.pluginHelpers.BigFileUpload as any;
 
+// Check if native module is available
+function isNativeAvailable(): boolean {
+    return Native != null && typeof Native.getLatestProgress === "function";
+}
+
 // Store polling interval ID for cleanup
 let progressPollingInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -55,7 +60,13 @@ let progressPollingInterval: ReturnType<typeof setInterval> | null = null;
  * Returns a cleanup function to stop polling
  */
 export function startProgressPolling(): () => void {
-    if (typeof window === "undefined") return () => {};
+    if (typeof window === "undefined") return () => { };
+
+    // Don't start if native module isn't available (browser extension)
+    if (!isNativeAvailable()) {
+        log.debug("Native module not available, skipping progress polling");
+        return () => { };
+    }
 
     // Don't start multiple polling intervals
     if (progressPollingInterval !== null) {
@@ -65,43 +76,50 @@ export function startProgressPolling(): () => void {
 
     log.debug("Starting progress polling...");
 
-    // Poll for progress updates every 1000ms (1 second)
-    // Avoids rate limits and reduces overhead
+    // Poll for progress updates every 250ms (quarter second)
+    // Matches component polling for responsive progress bar
     progressPollingInterval = setInterval(async () => {
-        const progress = await Native.getLatestProgress();
+        try {
+            if (!isNativeAvailable()) return;
+            const progress = await Native.getLatestProgress();
 
-        if (progress) {
-            const existing = activeUploads.get(progress.uploadId);
+            if (progress) {
+                log.debug("Progress poll received:", { uploadId: progress.uploadId, percent: progress.percent });
+                const existing = activeUploads.get(progress.uploadId);
 
-            // Optimization: Only update state if progress changed significantly (>1%)
-            // or if this is a new upload. This reduces unnecessary re-renders.
-            const isNewUpload = !existing;
-            const percentChange = existing ? Math.abs(progress.percent - existing.percent) : 100;
-            const isSignificantChange = percentChange >= 1;
+                // Optimization: Only update state if progress changed significantly (>1%)
+                // or if this is a new upload. This reduces unnecessary re-renders.
+                const isNewUpload = !existing;
+                const percentChange = existing ? Math.abs(progress.percent - existing.percent) : 100;
+                const isSignificantChange = percentChange >= 1;
 
-            // Also update on completion (100%) or when starting (0%)
-            const isCompletionOrStart = progress.percent >= 100 || progress.percent === 0;
+                // Also update on completion (100%) or when starting (0%)
+                const isCompletionOrStart = progress.percent >= 100 || progress.percent === 0;
 
-            if (isNewUpload || isSignificantChange || isCompletionOrStart) {
-                activeUploads.set(progress.uploadId, {
-                    ...progress,
-                    transferred: progress.loaded
-                });
+                if (isNewUpload || isSignificantChange || isCompletionOrStart) {
+                    activeUploads.set(progress.uploadId, {
+                        ...progress,
+                        transferred: progress.loaded
+                    });
 
-                if (isNewUpload) {
-                    log.debug(`New upload tracked: ${progress.uploadId}`);
+                    if (isNewUpload) {
+                        log.debug(`New upload tracked: ${progress.uploadId}`);
+                    }
                 }
-            }
 
-            // If no current upload is selected, set this as current
-            if (!currentUploadId || !activeUploads.has(currentUploadId)) {
-                currentUploadId = progress.uploadId;
+                // If no current upload is selected, set this as current
+                if (!currentUploadId || !activeUploads.has(currentUploadId)) {
+                    currentUploadId = progress.uploadId;
+                    log.debug("Set currentUploadId to:", currentUploadId);
+                }
+            } else if (!isComplete && activeUploads.size === 0) {
+                // No progress and no active uploads
+                currentUploadId = null;
             }
-        } else if (!isComplete && activeUploads.size === 0) {
-            // No progress and no active uploads
-            currentUploadId = null;
+        } catch (pollError) {
+            log.error("Progress polling error:", pollError);
         }
-    }, 1000);
+    }, 250);
 
     // Return cleanup function
     return () => stopProgressPolling();
@@ -144,7 +162,7 @@ export function completeUpload(uploadId: string) {
         isComplete = true;
         completionLogReported = false;
         // Clear native-side progress immediately to prevent re-polling stale data
-        Native.clearProgress();
+        if (isNativeAvailable()) Native.clearProgress();
     } else {
         // Switch to next upload if current one completed
         if (currentUploadId === uploadId) {
@@ -187,7 +205,7 @@ export function completeAndDispatch(uploadId: string): void {
         isDispatched = true; // Set dispatch at same time to prevent race condition
         completionLogReported = false;
         // Clear native-side progress immediately
-        Native.clearProgress();
+        if (isNativeAvailable()) Native.clearProgress();
     } else {
         // Multiple files: switch to next upload, don't mark dispatched yet
         if (currentUploadId === uploadId) {
@@ -201,8 +219,15 @@ export function completeAndDispatch(uploadId: string): void {
 
 // Export for progress bar component to access
 export function getCurrentProgress(): UploadProgress | null {
-    if (!currentUploadId) return null;
-    return activeUploads.get(currentUploadId) || null;
+    if (!currentUploadId) {
+        // Only log occasionally to avoid spam (every ~2 seconds)
+        if (Math.random() < 0.1) {
+            log.debug("getCurrentProgress: no currentUploadId, activeUploads.size =", activeUploads.size);
+        }
+        return null;
+    }
+    const progress = activeUploads.get(currentUploadId) || null;
+    return progress;
 }
 
 // Get all active uploads
@@ -259,7 +284,7 @@ export function clearGlobalState(): void {
     completedFiles = 0;
 
     // Also clear native progress to ensure clean state
-    Native.clearProgress();
+    if (isNativeAvailable()) Native.clearProgress();
 }
 
 // Clear state and force hide (for errors only)
@@ -283,14 +308,42 @@ export function startUploadBatch(fileCount: number): void {
         clearGlobalState();
     }
 
-    totalFiles = fileCount;
-    completedFiles = 0;
-    isComplete = false;
-    isDispatched = false;
-    completionLogReported = false;
-    forceHide = false; // Reset force hide when starting new upload
+    // If uploads are already in progress, ADD to the batch instead of resetting
+    // This handles the case where user drops another file while upload is running
+    if (activeUploads.size > 0 && !isComplete) {
+        totalFiles += fileCount;
+        log.debug("startUploadBatch (adding to existing)", { fileCount, newTotal: totalFiles, previousState });
+    } else {
+        // Fresh batch - reset counters
+        totalFiles = fileCount;
+        completedFiles = 0;
+        isComplete = false;
+        isDispatched = false;
+        completionLogReported = false;
+        forceHide = false; // Reset force hide when starting new upload
+        log.debug("startUploadBatch (fresh)", { fileCount, previousState, clearedPrevious: wasComplete });
+    }
 
-    log.debug("startUploadBatch", { fileCount, previousState, clearedPrevious: wasComplete });
+    // Immediately poll for progress to eliminate initial delay
+    // The native side may already have set initial progress
+    void (async () => {
+        try {
+            if (!isNativeAvailable()) return;
+            const progress = await Native.getLatestProgress();
+            if (progress) {
+                activeUploads.set(progress.uploadId, {
+                    ...progress,
+                    transferred: progress.loaded
+                });
+                if (!currentUploadId) {
+                    currentUploadId = progress.uploadId;
+                }
+                log.debug("Immediate progress poll found upload:", progress.uploadId);
+            }
+        } catch (e) {
+            // Ignore errors in immediate poll
+        }
+    })();
 }
 
 // Switch to viewing a different upload
@@ -303,6 +356,12 @@ export function switchToUpload(uploadId: string): void {
 // Cancel an upload
 export async function cancelUploadTracking(uploadId: string): Promise<boolean> {
     log.debug(`Cancelling upload: ${uploadId}`);
+
+    // Check if native module is available
+    if (!isNativeAvailable()) {
+        log.error("Cannot cancel upload: native module not available");
+        return false;
+    }
 
     try {
         // Call native cancel function
