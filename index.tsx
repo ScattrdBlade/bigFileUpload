@@ -499,14 +499,13 @@ function SettingsComponent(props: { setValue(v: any): void; }) {
                     <Select
                         className={Margins.bottom20}
                         options={[
-                            { label: "embeddr.top (recommended)", value: "embeddr" },
-                            { label: "x266.mov/discord-embed", value: "x266" },
+                            { label: "x266.mov", value: "x266" },
+                            { label: "embeddr.top", value: "embeddr" },
                             { label: "discord.nfp.is", value: "nfp" },
-                            { label: "stolen.shoes", value: "stolen" },
                         ]}
                         placeholder="Choose an embed service..."
                         select={value => updateSetting("embedService", value)}
-                        isSelected={value => value === (settings.store.embedService || "embeddr")}
+                        isSelected={value => value === (settings.store.embedService || "x266")}
                         serialize={value => value}
                         closeOnSelect={true}
                         clearable={false}
@@ -963,10 +962,9 @@ export const settings = definePluginSettings({
     embedService: {
         type: OptionType.SELECT,
         options: [
-            { label: "embeddr.top", value: "embeddr", default: true },
-            { label: "x266.mov", value: "x266" },
+            { label: "x266.mov", value: "x266", default: true },
+            { label: "embeddr.top", value: "embeddr" },
             { label: "discord.nfp.is", value: "nfp" },
-            { label: "stolen.shoes", value: "stolen" },
         ],
         description: "Which embed service to use for video files",
         hidden: true

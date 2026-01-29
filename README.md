@@ -1,6 +1,6 @@
 **UPDATE: Multiple embed services, fallback controls, and bug fixes**
 
--   **Multiple embed services** - choose from embeddr.top (default), x266.mov, discord.nfp.is, or stolen.shoes for video embedding (and removed videos.embed as it is deprecated)
+-   **Multiple embed services** - choose from embeddr.top (default), x266.mov, or discord.nfp.is for video embedding (and removed videos.embed as it is deprecated)
 -   **Disable fallbacks** - new option to only use your selected uploader without automatic fallbacks
 -   **Bug fixes** - fixed progress bar display issues, upload tracking, and various edge cases
 -   **Code cleanup** - refactored styles to use CSS classes

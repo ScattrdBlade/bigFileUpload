@@ -68,21 +68,52 @@ function safeUploadTimeout(ms: number | undefined): number {
 }
 
 /**
- * Get the embed service URL prefix based on user's selected service
- * @param service - The embed service identifier from settings
- * @returns The full URL prefix to prepend to video URLs
+ * Video extensions supported by each embed service
+ * - embeddr.top: only .mp4, .mov, .mkv
+ * - x266.mov: more diverse, includes .webm and others
+ * - nfp: no .mkv support, no HEVC/h.265
  */
-function getEmbedServiceUrl(service: string | undefined): string {
-    switch (service) {
+const EMBED_SERVICE_EXTENSIONS: Record<string, string[]> = {
+    embeddr: [".mp4", ".mov", ".mkv"],
+    x266: [".mp4", ".mov", ".mkv", ".webm", ".avi", ".flv"],
+    nfp: [".mp4", ".mov", ".webm", ".avi"], // .mkv does NOT work per their site
+};
+
+/**
+ * Check if a URL ends with a supported video extension for the given embed service
+ */
+function isEmbeddableVideoForService(url: string, service: string | undefined): boolean {
+    const lower = url.toLowerCase();
+    const extensions = EMBED_SERVICE_EXTENSIONS[service || "x266"] || EMBED_SERVICE_EXTENSIONS.x266;
+    return extensions.some(ext => lower.endsWith(ext));
+}
+
+/**
+ * Apply embed service to a video URL if appropriate
+ * Only applies if the URL ends with a supported video extension for that service
+ * Different services have different URL formats:
+ * - embeddr.top: https://embeddr.top/<url>
+ * - x266.mov: https://x266.mov/e/<url>
+ * - discord.nfp.is: https://discord.nfp.is/?v=<url-encoded>
+ */
+function applyEmbedService(url: string, service: string | undefined): string {
+    const svc = service || "x266";
+
+    if (!isEmbeddableVideoForService(url, svc)) {
+        const extensions = EMBED_SERVICE_EXTENSIONS[svc] || EMBED_SERVICE_EXTENSIONS.x266;
+        nativeLog.debug(`[BigFileUpload] Skipping embed service - URL must end with ${extensions.join(", ")}: ${url}`);
+        return url;
+    }
+
+    switch (svc) {
         case "x266":
-            return "https://x266.mov/discord-embed/";
+            return "https://x266.mov/e/" + url;
         case "nfp":
-            return "https://discord.nfp.is/";
-        case "stolen":
-            return "https://stolen.shoes/";
+            // discord.nfp.is uses ?v= query parameter with URL encoding
+            return "https://discord.nfp.is/?v=" + encodeURIComponent(url);
         case "embeddr":
         default:
-            return "https://embeddr.top/";
+            return "https://embeddr.top/" + url;
     }
 }
 
@@ -2440,7 +2471,7 @@ export async function uploadFileBuffer(
                     nativeLog.info(`[BigFileUpload] ✅ Background retry succeeded with ${backgroundWinner.uploader}!`);
                     let finalUrl = backgroundWinner.url;
                     if (uploaderSettings.useEmbedsVideo === "Yes") {
-                        finalUrl = getEmbedServiceUrl(uploaderSettings.embedService) + backgroundWinner.url;
+                        finalUrl = applyEmbedService(backgroundWinner.url, uploaderSettings.embedService);
                     }
                     if (uploaderSettings.autoFormat === "Yes") {
                         finalUrl = `[${fileName}](${finalUrl})`;
@@ -2464,7 +2495,7 @@ export async function uploadFileBuffer(
                 // Format URL if requested
                 let finalUrl = uploadResult;
                 if (uploaderSettings.useEmbedsVideo === "Yes") {
-                    finalUrl = getEmbedServiceUrl(uploaderSettings.embedService) + uploadResult;
+                    finalUrl = applyEmbedService(uploadResult, uploaderSettings.embedService);
                 }
 
                 if (uploaderSettings.autoFormat === "Yes") {
@@ -2583,7 +2614,7 @@ export async function uploadFileBuffer(
                         nativeLog.info(`[BigFileUpload] ✅ Background retry saved the day with ${finalCheck.uploader}!`);
                         let finalUrl = finalCheck.url;
                         if (uploaderSettings.useEmbedsVideo === "Yes") {
-                            finalUrl = getEmbedServiceUrl(uploaderSettings.embedService) + finalCheck.url;
+                            finalUrl = applyEmbedService(finalCheck.url, uploaderSettings.embedService);
                         }
                         if (uploaderSettings.autoFormat === "Yes") {
                             finalUrl = `[${fileName}](${finalUrl})`;
@@ -2946,7 +2977,7 @@ export async function pickAndUploadFile(
             // Format URL if requested
             let finalUrl = uploadResult;
             if (uploaderSettings.useEmbedsVideo === "Yes") {
-                finalUrl = getEmbedServiceUrl(uploaderSettings.embedService) + uploadResult;
+                finalUrl = applyEmbedService(uploadResult, uploaderSettings.embedService);
             }
 
             if (uploaderSettings.autoFormat === "Yes") {
