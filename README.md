@@ -1,10 +1,3 @@
-**UPDATE: Major overhaul**
-
-- **New upload services** - PixelDrain, Zipline, E-Z Host, Nest, Encrypting.host, S3-compatible, PixelVault, and WebDAV.
-- **Bypass Discord's upload button** - Intercept the native upload button.
-- **APNG → GIF** - Optionally convert animated PNGs to GIF on upload.
-- **Quality-of-life** - Auto-copy the URL, preserve original filenames, and strip query parameters.
-
 > [!TIP]
 > **If you run into any issues, please let me know on [Discord](https://discord.gg/jHDJaW9Gyz)**
 
@@ -22,7 +15,7 @@ If a host fails, it automatically falls back to the next one (no-key hosts first
 
 - Catbox.moe
 - Litterbox
-- 0x0.st _(desktop only)_
+- 0x0.st
 - tmpfiles.org
 - GoFile
 - buzzheavier.com
