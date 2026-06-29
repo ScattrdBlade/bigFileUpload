@@ -1,18 +1,45 @@
-**UPDATE: Multiple embed services, fallback controls, and bug fixes**
+**UPDATE: Major overhaul**
 
--   **Multiple embed services** - choose from x266.mov (default), embeddr.top, or discord.nfp.is for video embedding
--   **Disable fallbacks** - new option to only use your selected uploader without automatic fallbacks
--   **Bug fixes** - fixed progress bar display issues, upload tracking, and various edge cases
--   **Code cleanup** - refactored styles to use CSS classes
+- **New upload services** - PixelDrain, Zipline, E-Z Host, Nest, Encrypting.host, S3-compatible, PixelVault, and WebDAV.
+- **Bypass Discord's upload button** - Intercept the native upload button.
+- **APNG → GIF** - Optionally convert animated PNGs to GIF on upload.
+- **Quality-of-life** - Auto-copy the URL, preserve original filenames, and strip query parameters.
 
 > [!TIP]
 > **If you run into any issues, please let me know on [Discord](https://discord.gg/jHDJaW9Gyz)**
 
 # Big File Upload (Vencord)
 
-Bypass Discord's upload limit without Nitro. This plugin adds an `Upload a Big File` button that uploads your files to external hosting services (Catbox, Gofile, etc. or any ShareX-compatible custom uploader) and pastes the link into chat.
+Bypass Discord's upload limit without Nitro. Big File Upload sends your files to an external host — Catbox, GoFile, an S3 bucket, your own WebDAV or ShareX-compatible server, and more — then pastes the resulting link straight into chat.
 
-Features a real-time progress bar with upload speed, ETA, and cancel button. Supports drag & drop and paste for files up to 1GB, with unlimited file size via the Upload button. Optionally respects your Nitro limit so Discord handles smaller files natively.
+You can upload in several ways: the `Upload to Host` option in the `+` attachment menu, a right-click `Upload to <host>` entry on any image, video, or link, or by letting it transparently take over Discord's own upload button, drag & drop, and clipboard paste. A live progress bar shows the percentage, bytes transferred, and current host, with a cancel button.
+
+If a host fails, it automatically falls back to the next one (no-key hosts first by default), so an upload almost always lands. Enable Nitro-aware mode to let Discord handle anything under your current upload limit and only bypass for larger files. The maximum file size depends on the host you choose. Extras include converting APNG to GIF, preserving original filenames, auto-copying the link, stripping query parameters, and an optional embed proxy for inline video previews.
+
+## Supported Uploaders
+
+**No account or API key required** (work anonymously):
+
+- Catbox.moe
+- Litterbox
+- 0x0.st _(desktop only)_
+- tmpfiles.org
+- GoFile
+- buzzheavier.com
+- temp.sh
+- filebin.net
+- PixelDrain
+
+**Require a token / API key / credentials:**
+
+- Zipline
+- E-Z Host
+- Nest
+- Encrypting.host
+- S3-compatible (AWS S3, Cloudflare R2, MinIO, etc.)
+- PixelVault
+- ShareX Custom Uploader
+- WebDAV (Nextcloud / ownCloud)
 
 ## DOWNLOAD INSTRUCTIONS
 
