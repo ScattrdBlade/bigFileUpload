@@ -33,7 +33,7 @@ export const serviceLabels: Record<ServiceType, string> = {
     [ServiceType.CATBOX]: "Catbox",
     [ServiceType.ZEROX0]: "0x0.st",
     [ServiceType.LITTERBOX]: "Litterbox",
-    [ServiceType.SHAREX]: "ShareX Custom Uploader",
+    [ServiceType.SHAREX]: "ShareX/Custom Uploader",
     [ServiceType.GOFILE]: "GoFile",
     [ServiceType.TMPFILES]: "tmpfiles.org",
     [ServiceType.BUZZHEAVIER]: "buzzheavier.com",

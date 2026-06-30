@@ -38,7 +38,7 @@ const serviceOptions = [
     { label: "Encrypting.host", value: ServiceType.ENCRYPTINGHOST },
     { label: "S3-Compatible", value: ServiceType.S3 },
     { label: "PixelVault", value: ServiceType.PIXELVAULT },
-    { label: "ShareX Custom Uploader", value: ServiceType.SHAREX },
+    { label: "ShareX/Custom Uploader", value: ServiceType.SHAREX },
     { label: "WebDAV (Nextcloud/Owncloud)", value: ServiceType.WEBDAV }
 ];
 
@@ -204,7 +204,7 @@ export const settings = definePluginSettings({
     },
     sharexConfig: {
         type: OptionType.STRING,
-        description: "ShareX custom uploader JSON",
+        description: "ShareX/Custom uploader JSON",
         default: "",
         hidden: true
     },
@@ -264,8 +264,8 @@ export const settings = definePluginSettings({
     },
     uploadTimeoutMs: {
         type: OptionType.NUMBER,
-        description: "Upload timeout in milliseconds",
-        default: 300000,
+        description: "Abort an upload if it makes no progress for this many milliseconds",
+        default: 60000,
         hidden: true
     },
     stripQueryParams: {
@@ -291,6 +291,18 @@ export const settings = definePluginSettings({
         type: OptionType.STRING,
         description: "CORS proxy URL used for browser uploads",
         default: CORS_PROXY,
+        hidden: true
+    },
+    disableCorsProxy: {
+        type: OptionType.BOOLEAN,
+        description: "Send web uploads directly instead of through a CORS proxy",
+        default: false,
+        hidden: true
+    },
+    sharexFormView: {
+        type: OptionType.BOOLEAN,
+        description: "Edit the custom uploader with individual fields instead of raw JSON",
+        default: false,
         hidden: true
     },
     apngToGif: {
@@ -513,6 +525,130 @@ function FallbackOrderSettings() {
                 </Button>
             </div>
         </SettingsSection>
+    );
+}
+
+function readShareXConfigObject(raw?: string): Record<string, unknown> {
+    try {
+        const parsed = JSON.parse(raw || "{}");
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    } catch {
+        return {};
+    }
+}
+
+function ShareXFormFields(props: { store: { sharexConfig?: string; }; update: () => void; }) {
+    const { store, update } = props;
+    const config = readShareXConfigObject(store.sharexConfig);
+
+    const setField = (key: string, value: string) => {
+        const next = readShareXConfigObject(store.sharexConfig);
+        if (value.trim() === "") delete next[key];
+        else next[key] = value;
+        store.sharexConfig = JSON.stringify(next, null, 2);
+        update();
+    };
+
+    const method = String(config.RequestMethod || "POST");
+    const body = String(config.Body || "MultipartFormData");
+    const isMultipart = body === "MultipartFormData" || body === "FormData";
+
+    const [headersText, setHeadersText] = React.useState(() => {
+        const headers = config.Headers;
+        return headers && typeof headers === "object" && Object.keys(headers).length
+            ? JSON.stringify(headers, null, 2)
+            : "";
+    });
+    const [headersInvalid, setHeadersInvalid] = React.useState(false);
+
+    const applyHeaders = (text: string) => {
+        setHeadersText(text);
+        const next = readShareXConfigObject(store.sharexConfig);
+
+        if (text.trim() === "") {
+            delete next.Headers;
+            store.sharexConfig = JSON.stringify(next, null, 2);
+            setHeadersInvalid(false);
+            update();
+            return;
+        }
+
+        try {
+            const parsed = JSON.parse(text);
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+            next.Headers = parsed;
+            store.sharexConfig = JSON.stringify(next, null, 2);
+            setHeadersInvalid(false);
+            update();
+        } catch {
+            setHeadersInvalid(true);
+        }
+    };
+
+    return (
+        <>
+            <SettingTextInput
+                name="Request URL"
+                description="The endpoint your file is sent to (required)."
+                value={String(config.RequestURL || "")}
+                onChange={v => setField("RequestURL", v)}
+                placeholder="https://example.com/api/upload"
+            />
+            <SettingsSection id="sharex-form-method" name="HTTP Method" description="Most servers use POST. Use PUT/PATCH for raw upload APIs.">
+                <Select
+                    options={[
+                        { label: "POST", value: "POST" },
+                        { label: "PUT", value: "PUT" },
+                        { label: "PATCH", value: "PATCH" }
+                    ]}
+                    isSelected={v => v === method}
+                    select={v => setField("RequestMethod", v)}
+                    serialize={v => v}
+                    placeholder="Select method"
+                />
+            </SettingsSection>
+            <SettingsSection id="sharex-form-body" name="Body Type" description="Binary sends the raw file in the request body. Multipart sends it as a form field. JSON sends the arguments as a JSON body.">
+                <Select
+                    options={[
+                        { label: "Multipart Form Data", value: "MultipartFormData" },
+                        { label: "Binary (raw file in body)", value: "Binary" },
+                        { label: "JSON", value: "JSON" }
+                    ]}
+                    isSelected={v => v === body}
+                    select={v => setField("Body", v)}
+                    serialize={v => v}
+                    placeholder="Select body type"
+                />
+            </SettingsSection>
+            {isMultipart && (
+                <SettingTextInput
+                    name="File Form Field Name"
+                    description="The form field name your server expects the file under (defaults to 'file')."
+                    value={String(config.FileFormName || "")}
+                    onChange={v => setField("FileFormName", v)}
+                    placeholder="file"
+                />
+            )}
+            <SettingsSection
+                id="sharex-form-headers"
+                name="Headers (JSON)"
+                description={headersInvalid ? "⚠ Invalid JSON — header changes are not saved until valid." : "Optional request headers as a JSON object (e.g. an auth token)."}
+            >
+                <TextArea
+                    value={headersText}
+                    rows={3}
+                    placeholder={"{ \"Authorization\": \"Bearer ...\" }"}
+                    onChange={applyHeaders}
+                />
+            </SettingsSection>
+            <SettingTextInput
+                name="Response URL"
+                description="How to read the link from the response. Leave empty for plain-text or {url} JSON responses; otherwise use a ShareX template like $json:url$."
+                value={String(config.URL || "")}
+                onChange={v => setField("URL", v)}
+                placeholder="$json:url$"
+            />
+        </>
     );
 }
 
@@ -814,20 +950,30 @@ export function SettingsComponent() {
             )}
 
             {isShareX && (
-                <SettingGroup name="ShareX Custom Uploader" description="Paste, import, or validate a ShareX custom uploader config.">
-                    <SettingsSection
-                        id="sharex-custom-uploader-config"
-                        name="ShareX Custom Uploader Config"
-                        description="Paste your ShareX custom uploader JSON (.sxcu/.json). DestinationType must include FileUploader or ImageUploader."
-                    >
-                        <TextArea
-                            value={store.sharexConfig}
-                            rows={10}
-                            placeholder='{"RequestMethod":"POST","RequestURL":"https://example.com/api/upload","Body":"MultipartFormData"}'
-                            onChange={v => store.sharexConfig = v}
-                        />
-                    </SettingsSection>
-                    <SettingsSection id="sharex-config-actions" name="ShareX Config Actions" description="Import from file or validate pasted config">
+                <SettingGroup name="ShareX/Custom Uploader" description="Configure your own upload service. Use the guided form, or paste/import a raw ShareX config.">
+                    <SettingSwitch
+                        name="Form View"
+                        description="Edit with individual fields instead of the raw JSON config box."
+                        checked={Boolean(store.sharexFormView)}
+                        onChange={v => { store.sharexFormView = v; update(); }}
+                    />
+                    {store.sharexFormView ? (
+                        <ShareXFormFields store={store} update={update} />
+                    ) : (
+                        <SettingsSection
+                            id="sharex-custom-uploader-config"
+                            name="ShareX/Custom Uploader Config"
+                            description="Paste your ShareX/Custom uploader JSON (.sxcu/.json). DestinationType must include FileUploader or ImageUploader."
+                        >
+                            <TextArea
+                                value={store.sharexConfig}
+                                rows={10}
+                                placeholder='{"RequestMethod":"POST","RequestURL":"https://example.com/api/upload","Body":"MultipartFormData"}'
+                                onChange={v => store.sharexConfig = v}
+                            />
+                        </SettingsSection>
+                    )}
+                    <SettingsSection id="sharex-config-actions" name="ShareX Config Actions" description="Import from file or validate the config">
                         <div className={cl("actions")}>
                             <Button size="small" onClick={triggerShareXFileUpload}>Import .sxcu/.json</Button>
                             <Button size="small" onClick={validateShareXConfig}>Validate</Button>
@@ -1018,28 +1164,39 @@ export function SettingsComponent() {
             </SettingGroup>
 
             <SettingGroup name="Network" description="Configure browser upload proxying and timeouts.">
-                <SettingTextInput
-                    name="CORS Proxy URL"
-                    description="CORS proxy used for web uploads. Leave empty to use the default proxy."
-                    value={store.corsProxyUrl || ""}
-                    onChange={v => store.corsProxyUrl = v}
-                    placeholder="https://your-cors-proxy.example.com"
+                <SettingSwitch
+                    name="Disable CORS Proxy"
+                    description="Send web uploads directly instead of through a CORS proxy. Enable if your host already allows Discord's origin (or you've whitelisted it in Vencord's CSP settings)."
+                    checked={Boolean(store.disableCorsProxy)}
+                    onChange={v => { store.disableCorsProxy = v; update(); }}
                 />
 
-                <SettingsSection id="default-cors-proxy-source" name="Default CORS Proxy Source" description="Source code for the default CORS proxy">
-                    <a href="https://codeberg.org/key/corsproxy" target="_blank" rel="noreferrer">codeberg.org/key/corsproxy</a>
-                </SettingsSection>
+                {!store.disableCorsProxy && (
+                    <>
+                        <SettingTextInput
+                            name="CORS Proxy URL"
+                            description="CORS proxy used for web uploads. Leave empty to use the default proxy."
+                            value={store.corsProxyUrl || ""}
+                            onChange={v => store.corsProxyUrl = v}
+                            placeholder="https://your-cors-proxy.example.com"
+                        />
 
-                <SettingsSection id="upload-timeout" name="Upload Timeout" description="Maximum time to wait per upload attempt before switching to fallback">
+                        <SettingsSection id="default-cors-proxy-source" name="Default CORS Proxy Source" description="Source code for the default CORS proxy">
+                            <a href="https://codeberg.org/key/corsproxy" target="_blank" rel="noreferrer">codeberg.org/key/corsproxy</a>
+                        </SettingsSection>
+                    </>
+                )}
+
+                <SettingsSection id="upload-timeout" name="Upload Timeout" description="Abort an upload only if it stops making progress for this long, then switch to the next host.">
                     <Select
                         options={[
                             { label: "30 seconds", value: 30000 },
-                            { label: "1 minute", value: 60000 },
+                            { label: "1 minute", value: 60000, default: true },
                             { label: "2 minutes", value: 120000 },
-                            { label: "5 minutes", value: 300000, default: true },
+                            { label: "5 minutes", value: 300000 },
                             { label: "10 minutes", value: 600000 }
                         ]}
-                        isSelected={v => v === (store.uploadTimeoutMs || 300000)}
+                        isSelected={v => v === (store.uploadTimeoutMs || 60000)}
                         select={v => {
                             store.uploadTimeoutMs = v;
                             update();

@@ -14,6 +14,13 @@ export async function getUploadProgress(_: IpcMainInvokeEvent): Promise<{ loaded
     return uploadProgress;
 }
 
+let activeUploadController: AbortController | null = null;
+
+export async function cancelUpload(_: IpcMainInvokeEvent): Promise<void> {
+    activeUploadController?.abort();
+    activeUploadController = null;
+}
+
 const UPLOAD_CHUNK_SIZE = 262144; // 256 KB
 
 function progressStream(parts: Uint8Array[]): ReadableStream<Uint8Array> {
@@ -46,15 +53,21 @@ function streamFetch(url: string, method: string, headers: Record<string, string
     const total = parts.reduce((sum, part) => sum + part.length, 0);
     const finalHeaders: Record<string, string> = { ...headers, "Content-Length": String(total) };
     if (contentType) finalHeaders["Content-Type"] = contentType;
+
+    const controller = new AbortController();
+    activeUploadController = controller;
+
     return fetch(url, {
         method,
         headers: finalHeaders,
         body: progressStream(parts),
-        duplex: "half"
-    } as RequestInit & { duplex: "half"; });
+        duplex: "half",
+        signal: controller.signal
+    } as RequestInit & { duplex: "half"; }).finally(() => {
+        if (activeUploadController === controller) activeUploadController = null;
+    });
 }
 
-// multipart/form-data POST with progress tracking.
 function multipartFetch(url: string, fields: Record<string, string>, fileFieldName: string, fileBuffer: ArrayBuffer, filename: string, headers: Record<string, string> = {}): Promise<Response> {
     const boundary = `----BigFileUpload${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
     const encoder = new TextEncoder();
@@ -68,7 +81,6 @@ function multipartFetch(url: string, fields: Record<string, string>, fileFieldNa
     return streamFetch(url, "POST", headers, parts, `multipart/form-data; boundary=${boundary}`);
 }
 
-// raw body PUT/POST with progress tracking.
 function rawFetch(url: string, method: string, fileBuffer: ArrayBuffer, headers: Record<string, string> = {}): Promise<Response> {
     return streamFetch(url, method, headers, [new Uint8Array(fileBuffer)]);
 }

@@ -26,6 +26,10 @@ const Native = IS_DISCORD_DESKTOP
 export const logger = new Logger("BigFileUpload", "#7cb7ff");
 
 function toProxyUrl(url: string): string {
+    if ((settings.store as { disableCorsProxy?: boolean; }).disableCorsProxy) {
+        return url;
+    }
+
     const corsProxyUrl = normalizeCorsProxyUrl((settings.store as { corsProxyUrl?: string; }).corsProxyUrl);
 
     if (url.startsWith(`${corsProxyUrl}?url=`)) {
@@ -79,7 +83,7 @@ function isUploadCancelledError(error: unknown): boolean {
     if (!(error instanceof Error)) return false;
 
     const message = error.message.toLowerCase();
-    return message.includes("cancelled") || message.includes("canceled") || message.includes("aborted") || message.includes("aborterror");
+    return message.includes("cancelled by user") || message.includes("canceled by user");
 }
 
 function getFallbackServices(): ServiceType[] {
@@ -127,6 +131,7 @@ export function cancelCurrentUpload() {
     cancelRequested = true;
     activeAbortController?.abort();
     activeXhr?.abort();
+    void Native?.cancelUpload();
     setUploadState({
         phase: "cancelled",
         status: "Upload cancelled.",
@@ -138,7 +143,7 @@ export function cancelCurrentUpload() {
 function getUploadTimeoutMs(): number {
     const value = (settings.store as { uploadTimeoutMs?: number; }).uploadTimeoutMs;
     if (!Number.isFinite(value) || !value) {
-        return 300000;
+        return 60000;
     }
 
     return Math.max(5000, value);
@@ -241,7 +246,12 @@ async function uploadRequestWithTimeout(url: string, options: RequestInit): Prom
     return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         activeXhr = xhr;
-        const timeout = setTimeout(() => xhr.abort(), getUploadTimeoutMs());
+        const stallMs = getUploadTimeoutMs();
+        let timeout = setTimeout(() => xhr.abort(), stallMs);
+        const resetStallTimeout = () => {
+            clearTimeout(timeout);
+            timeout = setTimeout(() => xhr.abort(), stallMs);
+        };
 
         xhr.open(options.method || "GET", requestUrl);
 
@@ -249,7 +259,10 @@ async function uploadRequestWithTimeout(url: string, options: RequestInit): Prom
             xhr.setRequestHeader(key, value);
         }
 
-        xhr.upload.onprogress = setXhrUploadProgress;
+        xhr.upload.onprogress = event => {
+            resetStallTimeout();
+            setXhrUploadProgress(event);
+        };
         xhr.onload = () => resolve(new XhrResponse(xhr));
         xhr.onerror = () => reject(new Error("Upload failed"));
         xhr.onabort = () => reject(new Error(cancelRequested ? "Upload cancelled by user" : "Upload timed out"));
@@ -559,54 +572,52 @@ async function uploadToEncryptingHost(fileBlob: Blob, filename: string): Promise
     return url;
 }
 
-export function isConfigured(): boolean {
-    const {
-        serviceType,
-        serviceUrl,
-        ziplineToken,
-        nestToken
-    } = settings.store as {
-        serviceType: ServiceType;
+function getServiceConfigError(service: ServiceType): string | null {
+    const store = settings.store as {
         serviceUrl?: string;
         ziplineToken?: string;
         nestToken?: string;
+        ezHostKey?: string;
+        encryptingHostKey?: string;
+        pixelVaultKey?: string;
+        webdavUrl?: string;
     };
-    switch (serviceType) {
+
+    switch (service) {
+        case ServiceType.ZIPLINE:
+            return store.serviceUrl && store.ziplineToken ? null : "Zipline service URL and token required";
         case ServiceType.NEST:
-            return Boolean(nestToken);
+            return store.nestToken ? null : "Nest API token required";
         case ServiceType.EZHOST:
-            return Boolean((settings.store as { ezHostKey?: string; }).ezHostKey);
+            return store.ezHostKey ? null : "E-Z Host API key required";
         case ServiceType.ENCRYPTINGHOST:
-            return Boolean((settings.store as { encryptingHostKey?: string; }).encryptingHostKey);
+            return store.encryptingHostKey ? null : "Encrypting.host API key required";
         case ServiceType.S3:
-            return isS3Configured();
-        case ServiceType.CATBOX:
-            return true;
+            return isS3Configured() ? null : "S3 endpoint, bucket, and access keys required";
         case ServiceType.ZEROX0:
-            return Boolean(Native);
-        case ServiceType.LITTERBOX:
-        case ServiceType.GOFILE:
-        case ServiceType.TMPFILES:
-        case ServiceType.BUZZHEAVIER:
-        case ServiceType.TEMPSH:
-        case ServiceType.FILEBIN:
-        case ServiceType.PIXELDRAIN:
-            return true;
+            return Native ? null : "0x0.st requires the desktop app";
         case ServiceType.PIXELVAULT:
-            return Boolean((settings.store as { pixelVaultKey?: string; }).pixelVaultKey);
+            return store.pixelVaultKey ? null : "PixelVault upload key required";
         case ServiceType.WEBDAV:
-            return Boolean((settings.store as { webdavUrl?: string; }).webdavUrl);
+            return store.webdavUrl ? null : "WebDAV server URL required";
         case ServiceType.SHAREX:
             try {
                 parseShareXConfigFromSettings();
-                return true;
-            } catch {
-                return false;
+                return null;
+            } catch (error) {
+                return error instanceof Error ? error.message : "Invalid ShareX config";
             }
-        case ServiceType.ZIPLINE:
         default:
-            return Boolean(serviceUrl && ziplineToken);
+            return null;
     }
+}
+
+export function isConfigured(): boolean {
+    const selected = (settings.store as { serviceType: ServiceType; }).serviceType;
+    if (getServiceConfigError(selected) === null) return true;
+
+    if ((settings.store as { disableFallbacks?: boolean; }).disableFallbacks) return false;
+    return getFallbackServices().some(service => getServiceConfigError(service) === null);
 }
 
 async function uploadToEzHost(fileBlob: Blob, filename: string): Promise<string> {
@@ -1329,12 +1340,23 @@ async function notifyUploadSuccess(finalUrl: string, forceSend?: boolean): Promi
 function pollNativeUploadProgress(): () => void {
     const native = Native;
     if (!native) return () => { };
+    const stallMs = getUploadTimeoutMs();
+    let lastLoaded = -1;
+    let lastProgressAt = Date.now();
+    let aborted = false;
     const interval = setInterval(async () => {
         try {
             const p = await native.getUploadProgress();
-            if (p && p.total > 0 && !cancelRequested) {
+            if (!p || p.total <= 0 || cancelRequested || aborted) return;
+
+            if (p.loaded !== lastLoaded) {
+                lastLoaded = p.loaded;
+                lastProgressAt = Date.now();
                 const percent = Math.round(Math.max(0, Math.min(100, p.loaded / p.total * 100)));
                 setUploadState({ percent, transferredBytes: p.loaded, totalBytes: p.total });
+            } else if (Date.now() - lastProgressAt > stallMs) {
+                aborted = true;
+                void native.cancelUpload();
             }
         } catch { /* ignore transient poll errors */ }
     }, 150);
@@ -1363,6 +1385,13 @@ async function uploadWithFallbacks(fileBlob: Blob, filename: string, primary: Se
     for (const service of uploadOrder) {
         if (cancelRequested) throw new Error("Upload cancelled by user");
 
+        const configError = getServiceConfigError(service);
+        if (configError) {
+            showToast(`Skipped ${serviceLabels[service]}: ${configError}`, Toasts.Type.MESSAGE);
+            lastError = `${serviceLabels[service]} is not configured (${configError})`;
+            continue;
+        }
+
         const attempt = attempted.length + 1;
 
         setUploadState({
@@ -1381,6 +1410,11 @@ async function uploadWithFallbacks(fileBlob: Blob, filename: string, primary: Se
         const stopPolling = pollNativeUploadProgress();
         try {
             const uploadedUrl = await uploadToService(service, fileBlob, filename);
+
+            if (!/https?:\/\//i.test(uploadedUrl)) {
+                throw new Error(`${serviceLabels[service]} returned no URL: ${uploadedUrl.slice(0, 100) || "(empty response)"}`);
+            }
+
             if (attempted.length) {
                 showToast(`Upload succeeded with ${serviceLabels[service]} after fallback`, Toasts.Type.SUCCESS);
             }

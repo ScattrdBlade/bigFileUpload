@@ -31,7 +31,7 @@ If a host fails, it automatically falls back to the next one (no-key hosts first
 - Encrypting.host
 - S3-compatible (AWS S3, Cloudflare R2, MinIO, etc.)
 - PixelVault
-- ShareX Custom Uploader
+- ShareX/Custom Uploader
 - WebDAV (Nextcloud / ownCloud)
 
 ## DOWNLOAD INSTRUCTIONS
