@@ -13,8 +13,8 @@ import { Devs } from "@utils/constants";
 import { classNameFactory } from "@utils/css";
 import definePlugin from "@utils/types";
 import { CloudUpload } from "@vencord/discord-types";
-import { findByPropsLazy } from "@webpack";
-import { DraftType, FluxDispatcher, Menu, PermissionsBits, PermissionStore, React, showToast, Toasts, UploadAttachmentStore, useEffect, UserStore, useState } from "@webpack/common";
+import { findByCodeLazy, findByPropsLazy } from "@webpack";
+import { ChannelStore, DraftStore, DraftType, FluxDispatcher, Menu, PermissionsBits, PermissionStore, React, SelectedChannelStore, showToast, Toasts, UploadAttachmentStore, useEffect, UserStore, useState } from "@webpack/common";
 
 import { settings } from "./settings";
 import { serviceLabels, ServiceType } from "./types";
@@ -22,8 +22,12 @@ import { getMediaUrl } from "./utils/getMediaUrl";
 import { cancelCurrentUpload, getUploadState, isConfigured, isFileTypeAllowed, logger, subscribeUploadState, uploadFile, uploadPickedFile, uploadProvidedFiles } from "./utils/upload";
 const cl = classNameFactory("vc-file-upload-");
 const { getUserMaxFileSize } = findByPropsLazy("getUserMaxFileSize");
+const discordFilesExceedLimit = findByCodeLazy("web.filesExceedUploadLimits", "Array.from", ".size") as (files: readonly File[], guildId: string | null) => boolean;
 let uploadAddFilesInterceptor: ((event: unknown) => void) | null = null;
 let pasteEventListener: ((event: ClipboardEvent) => void) | null = null;
+let dragOverListener: ((event: Event) => void) | null = null;
+let dropEventListener: ((event: Event) => void) | null = null;
+const handledDropFiles = new WeakSet<File>();
 
 type UploadAddFilesEvent = {
     type: string;
@@ -31,21 +35,28 @@ type UploadAddFilesEvent = {
     uploads?: unknown;
     items?: unknown;
     draftType?: unknown;
-    maxFileSize?: unknown;
-    fileSizeLimit?: unknown;
-    limits?: {
-        fileSize?: unknown;
-    };
+    channelId?: string;
 };
 
-function shouldInterceptUploadFiles(files: readonly File[], payload: UploadAddFilesEvent): boolean {
+function getGuildIdForChannel(channelId: string | null | undefined): string | null {
+    if (!channelId) return null;
+    try {
+        const channel = ChannelStore.getChannel(channelId) as { getGuildId?: () => string | null; guild_id?: string | null; } | null;
+        return channel?.getGuildId?.() ?? channel?.guild_id ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function shouldInterceptUploadFiles(files: readonly File[], guildId: string | null): boolean {
     if (!settings.store.bypassDiscordUploadOnlyOverLimit) return true;
 
-    const directLimit = [payload.maxFileSize, payload.fileSizeLimit, payload.limits?.fileSize].find(limit => Number.isFinite(limit)) as number | undefined;
-    const fallbackLimit = getUserMaxFileSize(UserStore.getCurrentUser());
-    const discordLimit = Math.max(0, directLimit ?? fallbackLimit);
-
-    return files.some(file => file.size > discordLimit);
+    try {
+        return Boolean(discordFilesExceedLimit(files, guildId));
+    } catch {
+        const fallbackLimit = getUserMaxFileSize(UserStore.getCurrentUser());
+        return files.some(file => file.size > Math.max(0, fallbackLimit));
+    }
 }
 function extractFilesFromValue(value: unknown): File[] {
     if (value instanceof File) return [value];
@@ -82,10 +93,10 @@ function interceptUploadAddFiles(event: unknown): void {
         ...extractFilesFromValue(payload.uploads),
         ...extractFilesFromValue(payload.items)
     ];
-    const uniqueFiles = Array.from(new Set(files)).filter(f => isFileTypeAllowed(f));
+    const uniqueFiles = Array.from(new Set(files)).filter(f => isFileTypeAllowed(f) && !handledDropFiles.has(f));
 
     if (!uniqueFiles.length) return;
-    if (!shouldInterceptUploadFiles(uniqueFiles, payload)) return;
+    if (!shouldInterceptUploadFiles(uniqueFiles, getGuildIdForChannel(payload.channelId))) return;
 
     payload.files = [];
     payload.uploads = [];
@@ -101,10 +112,59 @@ function handlePaste(event: ClipboardEvent) {
 
     const allowed = files.filter(f => isFileTypeAllowed(f));
     if (allowed.length === 0) return;
+    if (!shouldInterceptUploadFiles(allowed, getGuildIdForChannel(SelectedChannelStore.getChannelId()))) return;
 
     event.preventDefault();
     event.stopPropagation();
 
+    void uploadProvidedFiles(allowed);
+}
+
+function isForumOrSlashContext(channelId: string | null): boolean {
+    if (!channelId) return false;
+    try {
+        const channel = ChannelStore.getChannel(channelId);
+        if (channel?.isForumChannel?.() && DraftStore.getThreadSettings(channelId)) return true;
+        if (DraftStore.getDraft(channelId, DraftType.SlashCommand)?.trim()) return true;
+        const slashUploads = UploadAttachmentStore.getUploads(channelId, DraftType.SlashCommand);
+        if (Array.isArray(slashUploads) && slashUploads.length > 0) return true;
+    } catch {
+        return false;
+    }
+    return false;
+}
+
+const CHAT_DROP_ZONE_SELECTOR = "[class*=\"messagesWrapper\"], [class*=\"chatContent\"], [class*=\"channelTextArea\"]";
+
+function isChatAreaDrop(target: EventTarget | null): boolean {
+    return target instanceof Element && Boolean(target.closest(CHAT_DROP_ZONE_SELECTOR));
+}
+
+function handleDragOver(event: DragEvent): void {
+    if (!settings.store.bypassDragDrop) return;
+    if (!isChatAreaDrop(event.target)) return;
+    if (Array.from(event.dataTransfer?.types || []).includes("Files")) {
+        event.preventDefault();
+    }
+}
+
+function handleFileDrop(event: DragEvent): void {
+    const files = Array.from(event.dataTransfer?.files || []);
+    if (!files.length) return;
+
+    if (!settings.store.bypassDragDrop || !isConfigured()) return;
+    if (!isChatAreaDrop(event.target)) return;
+    if (isForumOrSlashContext(SelectedChannelStore.getChannelId())) return;
+
+    const allowed = files.filter(f => isFileTypeAllowed(f));
+    if (!allowed.length) return;
+    if (!shouldInterceptUploadFiles(allowed, getGuildIdForChannel(SelectedChannelStore.getChannelId()))) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    event.stopPropagation();
+
+    allowed.forEach(file => handledDropFiles.add(file));
     void uploadProvidedFiles(allowed);
 }
 
@@ -350,6 +410,12 @@ export default definePlugin({
 
         pasteEventListener = event => handlePaste(event);
         document.addEventListener("paste", pasteEventListener, true);
+
+        dragOverListener = event => handleDragOver(event as DragEvent);
+        document.addEventListener("dragover", dragOverListener, true);
+
+        dropEventListener = event => handleFileDrop(event as DragEvent);
+        document.addEventListener("drop", dropEventListener, true);
     },
     stop() {
         if (!uploadAddFilesInterceptor) {
@@ -366,6 +432,16 @@ export default definePlugin({
         if (pasteEventListener) {
             document.removeEventListener("paste", pasteEventListener, true);
             pasteEventListener = null;
+        }
+
+        if (dragOverListener) {
+            document.removeEventListener("dragover", dragOverListener, true);
+            dragOverListener = null;
+        }
+
+        if (dropEventListener) {
+            document.removeEventListener("drop", dropEventListener, true);
+            dropEventListener = null;
         }
     },
     shouldBypassDiscordUploadSizeCheck(): boolean {

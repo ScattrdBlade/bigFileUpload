@@ -1312,7 +1312,7 @@ function getFilenameExtension(filename: string): string | undefined {
     return ext.length <= 10 ? ext : undefined;
 }
 
-async function notifyUploadSuccess(finalUrl: string, forceSend?: boolean): Promise<void> {
+async function notifyUploadSuccess(finalUrl: string, forceSend?: boolean, displayName?: string): Promise<void> {
     if (settings.store.autoCopy) {
         if (!finalUrl || !finalUrl.trim()) {
             showToast("Upload successful, but no URL was available to copy", Toasts.Type.MESSAGE);
@@ -1331,9 +1331,15 @@ async function notifyUploadSuccess(finalUrl: string, forceSend?: boolean): Promi
     }
 
     const autoSend = forceSend || Boolean((settings.store as { autoSend?: boolean; }).autoSend);
-    const autoFormat = Boolean((settings.store as { autoFormat?: boolean; }).autoFormat);
     if (autoSend) {
-        insertTextIntoChatInputBox(autoFormat ? `<${finalUrl}>` : finalUrl);
+        const { autoFormat, displayOriginalFilename } = settings.store as { autoFormat?: boolean; displayOriginalFilename?: boolean; };
+        let text = finalUrl;
+        if (displayOriginalFilename && displayName) {
+            text = `[${displayName.replace(/[[\]]/g, "")}](${finalUrl})`;
+        } else if (autoFormat) {
+            text = `<${finalUrl}>`;
+        }
+        insertTextIntoChatInputBox(text);
     }
 }
 
@@ -1463,7 +1469,7 @@ async function uploadWithFallbacks(fileBlob: Blob, filename: string, primary: Se
     throw new Error(`All upload services failed. Last error: ${lastError}. Tried: ${attempted.join(", ")}`);
 }
 
-async function normalizeUploadBlob(blob: Blob, sourceUrl?: string): Promise<{ blob: Blob; filename: string; }> {
+async function normalizeUploadBlob(blob: Blob, sourceUrl?: string): Promise<{ blob: Blob; filename: string; originalFilename: string; }> {
     let sourceFileName = "";
     if (blob instanceof File && blob.name) {
         sourceFileName = blob.name;
@@ -1499,17 +1505,18 @@ async function normalizeUploadBlob(blob: Blob, sourceUrl?: string): Promise<{ bl
 
     return {
         blob: new Blob([blob], { type: mimeType }),
-        filename
+        filename,
+        originalFilename: sourceFileName
     };
 }
 
 async function uploadPreparedBlob(blob: Blob, sourceUrl?: string, forceSend?: boolean): Promise<string> {
     const primary = settings.store.serviceType as ServiceType;
-    const { blob: normalizedBlob, filename } = await normalizeUploadBlob(blob, sourceUrl);
+    const { blob: normalizedBlob, filename, originalFilename } = await normalizeUploadBlob(blob, sourceUrl);
     setUploadState({ fileName: filename, status: "File ready, starting upload...", percent: 4 });
     const uploadedUrl = await uploadWithFallbacks(normalizedBlob, filename, primary);
     const finalUrl = applyEmbedProxy(finalizeUploadedUrl(uploadedUrl));
-    await notifyUploadSuccess(finalUrl, forceSend);
+    await notifyUploadSuccess(finalUrl, forceSend, originalFilename || filename);
     return finalUrl;
 }
 

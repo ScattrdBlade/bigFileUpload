@@ -38,8 +38,8 @@ const serviceOptions = [
     { label: "Encrypting.host", value: ServiceType.ENCRYPTINGHOST },
     { label: "S3-Compatible", value: ServiceType.S3 },
     { label: "PixelVault", value: ServiceType.PIXELVAULT },
-    { label: "ShareX/Custom Uploader", value: ServiceType.SHAREX },
-    { label: "WebDAV (Nextcloud/Owncloud)", value: ServiceType.WEBDAV }
+    { label: "WebDAV (Nextcloud/Owncloud)", value: ServiceType.WEBDAV },
+    { label: "ShareX/Custom Uploader", value: ServiceType.SHAREX }
 ];
 
 const litterboxOptions = [
@@ -216,7 +216,7 @@ export const settings = definePluginSettings({
     },
     autoSend: {
         type: OptionType.BOOLEAN,
-        description: "Insert uploaded URL in chat input",
+        description: "Insert uploaded URL into chatbox",
         default: true,
         hidden: true
     },
@@ -226,9 +226,21 @@ export const settings = definePluginSettings({
         default: false,
         hidden: true
     },
+    displayOriginalFilename: {
+        type: OptionType.BOOLEAN,
+        description: "Insert the link as a clickable [filename](url) showing the original filename",
+        default: false,
+        hidden: true
+    },
     bypassDiscordUpload: {
         type: OptionType.BOOLEAN,
         description: "Bypass Discord uploads and use BigFileUpload instead.",
+        default: true,
+        hidden: true
+    },
+    bypassDragDrop: {
+        type: OptionType.BOOLEAN,
+        description: "Use BigFileUpload when dragging & dropping files into chat.",
         default: true,
         hidden: true
     },
@@ -277,7 +289,7 @@ export const settings = definePluginSettings({
     embedProxyEnabled: {
         type: OptionType.BOOLEAN,
         description: "Proxy uploaded video links through an embed helper service.",
-        default: false,
+        default: true,
         hidden: true
     },
     embedProxyService: {
@@ -325,7 +337,7 @@ export const settings = definePluginSettings({
     },
     autoUploadPastedFiles: {
         type: OptionType.BOOLEAN,
-        description: "Automatically upload files from clipboard to image host when pasting in chat input.",
+        description: "Automatically upload files from clipboard to image host when pasting into chatbox.",
         default: true,
         hidden: true
     },
@@ -561,6 +573,14 @@ function ShareXFormFields(props: { store: { sharexConfig?: string; }; update: ()
     });
     const [headersInvalid, setHeadersInvalid] = React.useState(false);
 
+    const [argsText, setArgsText] = React.useState(() => {
+        const args = config.Arguments;
+        return args && typeof args === "object" && Object.keys(args).length
+            ? JSON.stringify(args, null, 2)
+            : "";
+    });
+    const [argsInvalid, setArgsInvalid] = React.useState(false);
+
     const applyHeaders = (text: string) => {
         setHeadersText(text);
         const next = readShareXConfigObject(store.sharexConfig);
@@ -582,6 +602,30 @@ function ShareXFormFields(props: { store: { sharexConfig?: string; }; update: ()
             update();
         } catch {
             setHeadersInvalid(true);
+        }
+    };
+
+    const applyArgs = (text: string) => {
+        setArgsText(text);
+        const next = readShareXConfigObject(store.sharexConfig);
+
+        if (text.trim() === "") {
+            delete next.Arguments;
+            store.sharexConfig = JSON.stringify(next, null, 2);
+            setArgsInvalid(false);
+            update();
+            return;
+        }
+
+        try {
+            const parsed = JSON.parse(text);
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+            next.Arguments = parsed;
+            store.sharexConfig = JSON.stringify(next, null, 2);
+            setArgsInvalid(false);
+            update();
+        } catch {
+            setArgsInvalid(true);
         }
     };
 
@@ -641,6 +685,20 @@ function ShareXFormFields(props: { store: { sharexConfig?: string; }; update: ()
                     onChange={applyHeaders}
                 />
             </SettingsSection>
+            {body !== "Binary" && (
+                <SettingsSection
+                    id="sharex-form-arguments"
+                    name="Arguments (JSON)"
+                    description={argsInvalid ? "⚠ Invalid JSON — argument changes are not saved until valid." : "Optional extra fields sent with the upload — multipart form fields, or the JSON request body. As a JSON object."}
+                >
+                    <TextArea
+                        value={argsText}
+                        rows={3}
+                        placeholder={"{ \"key\": \"value\" }"}
+                        onChange={applyArgs}
+                    />
+                </SettingsSection>
+            )}
             <SettingTextInput
                 name="Response URL"
                 description="How to read the link from the response. Leave empty for plain-text or {url} JSON responses; otherwise use a ShareX template like $json:url$."
@@ -713,6 +771,12 @@ export function SettingsComponent() {
                         store.serviceType = service;
                         update();
                     }}
+                />
+                <SettingSwitch
+                    name="Disable Fallback Uploaders"
+                    description="Only use the selected uploader without trying fallback hosts."
+                    checked={store.disableFallbacks}
+                    onChange={v => store.disableFallbacks = v}
                 />
             </SettingsSection>
 
@@ -899,18 +963,20 @@ export function SettingsComponent() {
             )}
 
             {isLitterbox && (
-                <SettingsSection id="litterbox-expiry" name="Litterbox Expiry" description="How long uploads are retained">
-                    <Select
-                        options={litterboxOptions}
-                        isSelected={v => v === store.litterboxExpiry}
-                        select={v => {
-                            store.litterboxExpiry = v;
-                            update();
-                        }}
-                        serialize={v => v}
-                        placeholder="Select expiry"
-                    />
-                </SettingsSection>
+                <SettingGroup name="Litterbox" description="Litterbox stores uploads temporarily; choose how long they're kept.">
+                    <SettingsSection id="litterbox-expiry" name="Retention Window" description="How long uploads are kept before they're deleted.">
+                        <Select
+                            options={litterboxOptions}
+                            isSelected={v => v === store.litterboxExpiry}
+                            select={v => {
+                                store.litterboxExpiry = v;
+                                update();
+                            }}
+                            serialize={v => v}
+                            placeholder="Select expiry"
+                        />
+                    </SettingsSection>
+                </SettingGroup>
             )}
 
             {isGofile && (
@@ -1056,30 +1122,58 @@ export function SettingsComponent() {
                 </SettingGroup>
             )}
 
-            <SettingGroup name="Upload Behavior" description="Control what BigFileUpload does after a host returns a URL.">
+            <SettingGroup name="Upload Behavior" description="Control how BigFileUpload handles uploads and the resulting link.">
                 <SettingSwitch
-                    name="Disable Fallback Uploaders"
-                    description="Only use the selected uploader without trying fallback hosts."
-                    checked={store.disableFallbacks}
-                    onChange={v => store.disableFallbacks = v}
-                />
-
-                <SettingSwitch
-                    name="Insert URL into Chat Input"
-                    description="After upload, insert the resulting URL into the current chat input."
+                    name="Insert URL into Chatbox"
+                    description="Insert the uploaded file URL into the current chatbox."
                     checked={store.autoSend}
                     onChange={v => store.autoSend = v}
                 />
 
                 <SettingSwitch
-                    name="Auto Copy URL"
+                    name="Copy URL to Clipboard"
                     description="Automatically copy the uploaded file URL to clipboard."
                     checked={store.autoCopy}
                     onChange={v => store.autoCopy = v}
                 />
 
                 <SettingSwitch
-                    name="Use Embed Proxy"
+                    name="Link as Filename"
+                    description="Format the uploaded file URL as clickable text showing the original filename."
+                    checked={Boolean((store as { displayOriginalFilename?: boolean; }).displayOriginalFilename)}
+                    onChange={v => (store as { displayOriginalFilename?: boolean; }).displayOriginalFilename = v}
+                />
+
+                <SettingSwitch
+                    name="Prevent Discord Embeds"
+                    description="When inserting uploaded file URLs into chatbox, wrap them in angle brackets to avoid Discord embedding."
+                    checked={store.autoFormat}
+                    onChange={v => store.autoFormat = v}
+                />
+
+                <SettingSwitch
+                    name="Convert APNG to GIF"
+                    description="Automatically convert uploaded APNG files to GIF format."
+                    checked={store.apngToGif}
+                    onChange={v => store.apngToGif = v}
+                />
+
+                <SettingSwitch
+                    name="Preserve Original Filename"
+                    description="Use the original filename instead of generic names for uploaders that allow it."
+                    checked={Boolean((store as { preserveOriginalFilename?: boolean; }).preserveOriginalFilename)}
+                    onChange={v => (store as { preserveOriginalFilename?: boolean; }).preserveOriginalFilename = v}
+                />
+
+                <SettingSwitch
+                    name="Strip Query Parameters"
+                    description="Strip query parameters from the uploaded file URL."
+                    checked={store.stripQueryParams}
+                    onChange={v => store.stripQueryParams = v}
+                />
+
+                <SettingSwitch
+                    name="Video Embed Proxy"
                     description="Wrap uploaded video links with an embed proxy service for better Discord previews."
                     checked={store.embedProxyEnabled}
                     onChange={v => {
@@ -1103,53 +1197,33 @@ export function SettingsComponent() {
                     </SettingsSection>
                 )}
 
-                <SettingSwitch
-                    name="Convert APNG to GIF"
-                    description="Convert APNG files to GIF format."
-                    checked={store.apngToGif}
-                    onChange={v => store.apngToGif = v}
-                />
-
-                <SettingSwitch
-                    name="Preserve Original Filename"
-                    description="Use the original filename instead of naming uploads as upload.ext for uploaders that allow it."
-                    checked={Boolean((store as { preserveOriginalFilename?: boolean; }).preserveOriginalFilename)}
-                    onChange={v => (store as { preserveOriginalFilename?: boolean; }).preserveOriginalFilename = v}
-                />
-
-                <SettingSwitch
-                    name="Format Inserted URL"
-                    description="Wrap inserted URLs in angle brackets to avoid Discord preview embedding."
-                    checked={store.autoFormat}
-                    onChange={v => store.autoFormat = v}
-                />
-
-                <SettingSwitch
-                    name="Strip Query Parameters"
-                    description="Strip query parameters from the uploaded file URL."
-                    checked={store.stripQueryParams}
-                    onChange={v => store.stripQueryParams = v}
-                />
             </SettingGroup>
 
             <SettingGroup name="Discord Integration" description="Choose when BigFileUpload takes over Discord file handling.">
                 <SettingSwitch
                     name="Respect Discord File Size Limit"
-                    description="Use BigFileUpload only for files larger than your current Discord upload limit."
+                    description="Only intercept uploads for files larger than your current Discord upload limit."
                     checked={store.bypassDiscordUploadOnlyOverLimit}
                     onChange={v => store.bypassDiscordUploadOnlyOverLimit = v}
                 />
 
                 <SettingSwitch
                     name="Bypass Discord Upload Button"
-                    description="Use BigFileUpload when uploading through Discord's file picker."
+                    description="Intercept uploads when uploading files via the native upload button."
                     checked={Boolean((store as { bypassDiscordUpload?: boolean; }).bypassDiscordUpload)}
                     onChange={v => (store as { bypassDiscordUpload?: boolean; }).bypassDiscordUpload = v}
                 />
 
                 <SettingSwitch
-                    name="Auto Upload Pasted Files"
-                    description="Automatically upload files from clipboard to image host when pasting in chat input."
+                    name="Bypass Drag & Drop"
+                    description="Intercept uploads when dragging & dropping files into the chatbox."
+                    checked={Boolean((store as { bypassDragDrop?: boolean; }).bypassDragDrop)}
+                    onChange={v => (store as { bypassDragDrop?: boolean; }).bypassDragDrop = v}
+                />
+
+                <SettingSwitch
+                    name="Bypass Pasted Files"
+                    description="Intercept uploads when pasting files into the chatbox."
                     checked={store.autoUploadPastedFiles}
                     onChange={v => store.autoUploadPastedFiles = v}
                 />
