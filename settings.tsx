@@ -246,7 +246,7 @@ export const settings = definePluginSettings({
     },
     bypassDiscordUploadOnlyOverLimit: {
         type: OptionType.BOOLEAN,
-        description: "Only use BigFileUpload if the file(s) exceed the file size limit.",
+        description: "Only use BigFileUpload for files over 20 MB or your higher Discord upload limit.",
         default: true,
         hidden: true
     },
@@ -1202,7 +1202,7 @@ export function SettingsComponent() {
             <SettingGroup name="Discord Integration" description="Choose when BigFileUpload takes over Discord file handling.">
                 <SettingSwitch
                     name="Respect Discord File Size Limit"
-                    description="Only intercept uploads for files larger than your current Discord upload limit."
+                    description="Only intercept uploads for files over 20 MB or your higher Nitro/server upload limit."
                     checked={store.bypassDiscordUploadOnlyOverLimit}
                     onChange={v => store.bypassDiscordUploadOnlyOverLimit = v}
                 />

@@ -16,6 +16,7 @@ import { CloudUpload } from "@vencord/discord-types";
 import { findByCodeLazy, findByPropsLazy } from "@webpack";
 import { ChannelStore, DraftStore, DraftType, FluxDispatcher, Menu, PermissionsBits, PermissionStore, React, SelectedChannelStore, showToast, Toasts, UploadAttachmentStore, useEffect, UserStore, useState } from "@webpack/common";
 
+import { DEFAULT_DISCORD_UPLOAD_LIMIT } from "./constants";
 import { settings } from "./settings";
 import { serviceLabels, ServiceType } from "./types";
 import { getMediaUrl } from "./utils/getMediaUrl";
@@ -50,12 +51,13 @@ function getGuildIdForChannel(channelId: string | null | undefined): string | nu
 
 function shouldInterceptUploadFiles(files: readonly File[], guildId: string | null): boolean {
     if (!settings.store.bypassDiscordUploadOnlyOverLimit) return true;
+    if (files.every(file => file.size <= DEFAULT_DISCORD_UPLOAD_LIMIT)) return false;
 
     try {
         return Boolean(discordFilesExceedLimit(files, guildId));
     } catch {
-        const fallbackLimit = getUserMaxFileSize(UserStore.getCurrentUser());
-        return files.some(file => file.size > Math.max(0, fallbackLimit));
+        const fallbackLimit = Math.max(DEFAULT_DISCORD_UPLOAD_LIMIT, getUserMaxFileSize(UserStore.getCurrentUser()));
+        return files.some(file => file.size > fallbackLimit);
     }
 }
 function extractFilesFromValue(value: unknown): File[] {
