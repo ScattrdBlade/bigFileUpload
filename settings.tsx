@@ -11,7 +11,7 @@ import { Switch } from "@components/Switch";
 import { classNameFactory } from "@utils/css";
 import { useForceUpdater } from "@utils/react";
 import { OptionType } from "@utils/types";
-import { React, Select, showToast, TextArea, TextInput, Toasts } from "@webpack/common";
+import { React, Select, showToast, TextArea, TextInput, } from "@webpack/common";
 
 import { CORS_PROXY } from "./constants";
 import { fallbackServiceOrder, serviceLabels, ServiceType } from "./types";
@@ -730,10 +730,16 @@ export function SettingsComponent() {
     const validateShareXConfig = () => {
         try {
             parseShareXConfig(store.sharexConfig || "");
-            showToast("ShareX config is valid", Toasts.Type.SUCCESS);
+            showToast({
+                text: "ShareX config is valid",
+                variant: "success"
+            });
         } catch (error) {
             const message = error instanceof Error ? error.message : "Invalid ShareX config";
-            showToast(message, Toasts.Type.FAILURE);
+            showToast({
+                text: message,
+                variant: "critical"
+            });
         }
     };
 
@@ -752,10 +758,16 @@ export function SettingsComponent() {
                 const parsed = parseShareXConfig(content);
                 store.sharexConfig = JSON.stringify(parsed, null, 2);
                 update();
-                showToast("Imported ShareX config", Toasts.Type.SUCCESS);
+                showToast({
+                    text: "Imported ShareX config",
+                    variant: "success"
+                });
             } catch (error) {
                 const message = error instanceof Error ? error.message : "Failed to import ShareX config";
-                showToast(message, Toasts.Type.FAILURE);
+                showToast({
+                    text: message,
+                    variant: "critical"
+                });
             }
         };
         reader.readAsText(file);
