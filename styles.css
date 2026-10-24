@@ -3,7 +3,7 @@
     border-radius: 8px;
     border: 1px solid var(--border-subtle);
     padding: 8px 10px;
-    background: var(--background-secondary);
+    background: var(--background-base-lower);
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -19,12 +19,17 @@
 .vc-file-upload-progress-label {
     font-size: 12px;
     color: var(--text-default);
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 .vc-file-upload-progress-meta {
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    min-width: 0;
 }
 
 .vc-file-upload-progress-percent {
@@ -33,20 +38,115 @@
     white-space: nowrap;
 }
 
+.vc-file-upload-progress-queue-toggle {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--text-default);
+    font-size: 12px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.vc-file-upload-progress-queue-toggle:hover {
+    text-decoration: underline;
+}
+
+.vc-file-upload-progress-queue {
+    display: grid;
+    gap: 4px;
+    margin: 6px 0 0;
+    padding: 6px 0 0;
+    border-top: 1px solid var(--border-subtle);
+    list-style: none;
+}
+
+.vc-file-upload-progress-queue-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.vc-file-upload-progress-queue-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-default);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vc-file-upload-progress-queue-size {
+    white-space: nowrap;
+}
+
+.vc-file-upload-progress-queue-remove {
+    padding: 0 4px;
+    border: none;
+    border-radius: 4px;
+    background: none;
+    color: var(--text-muted);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.vc-file-upload-progress-queue-remove:hover {
+    background: var(--background-modifier-hover);
+    color: var(--text-default);
+}
+
+.vc-file-upload-progress-attempt {
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
 .vc-file-upload-progress-cancel {
     border: none;
     border-radius: 6px;
-    background: var(--button-danger-background);
+    background: var(--control-critical-primary-background-default);
+    color: var(--control-critical-primary-text-default);
+    font-size: 11px;
+    padding: 3px 8px;
+    cursor: pointer;
+}
+
+.vc-file-upload-progress-copy {
+    border: none;
+    border-radius: 6px;
+    background: var(--brand-500);
     color: var(--white-500);
     font-size: 11px;
     padding: 3px 8px;
     cursor: pointer;
 }
 
+.vc-file-upload-late-link {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--background-base-lower);
+    color: var(--text-default);
+    font-family: var(--font-code);
+}
+
+.vc-file-upload-late-note {
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
 .vc-file-upload-progress-track {
+    overflow: hidden;
     width: 100%;
     height: 6px;
-    background: var(--background-tertiary);
+    background: var(--background-base-lowest);
     border-radius: 999px;
 }
 
@@ -55,6 +155,29 @@
     border-radius: 999px;
     background: var(--brand-500);
     transition: width 200ms ease;
+}
+
+.vc-file-upload-progress-fill[data-indeterminate] {
+    width: 30%;
+    animation: vc-file-upload-indeterminate 1.4s ease-in-out infinite;
+}
+
+@keyframes vc-file-upload-indeterminate {
+    from {
+        transform: translateX(-100%);
+    }
+
+    to {
+        transform: translateX(340%);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .vc-file-upload-progress-fill[data-indeterminate] {
+        width: 100%;
+        opacity: 0.5;
+        animation: none;
+    }
 }
 
 .vc-file-upload-progress-file {
@@ -86,13 +209,13 @@
     padding: 8px 10px;
     border-radius: 8px;
     border: 1px solid var(--border-subtle);
-    background: var(--background-secondary);
+    background: var(--background-base-lower);
     color: var(--text-default);
     cursor: grab;
 }
 
 .vc-file-upload-settings-fallback-order-item[data-dragging="true"] {
-    background: var(--background-modifier-hover);
+    background: var(--background-mod-subtle);
 }
 
 .vc-file-upload-settings-fallback-order-label {
@@ -108,9 +231,78 @@
     margin-top: 8px;
 }
 
+.vc-file-upload-settings-fallback-order-heading {
+    margin: 12px 0 6px;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.vc-file-upload-settings-fallback-order-list[data-area="inactive"] {
+    min-height: 36px;
+}
+
+.vc-file-upload-settings-fallback-order-item[data-selected-host="true"],
+.vc-file-upload-settings-fallback-order-item[aria-disabled="true"] {
+    cursor: default;
+}
+
+.vc-file-upload-settings-fallback-order-text {
+    display: grid;
+    flex: 1;
+    gap: 2px;
+    min-width: 0;
+}
+
+.vc-file-upload-settings-fallback-order-badge,
+.vc-file-upload-settings-fallback-order-note,
+.vc-file-upload-settings-host-note {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.vc-file-upload-settings-fallback-order-switch {
+    display: flex;
+    align-items: center;
+}
+
+.vc-file-upload-settings-fallback-order-banner,
+.vc-file-upload-settings-fallback-order-empty {
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px dashed var(--border-subtle);
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.vc-file-upload-settings-fallback-order-banner {
+    margin-bottom: 8px;
+}
+
+.vc-file-upload-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+}
+
 .vc-file-upload-settings-group {
     display: grid;
     gap: 10px;
+}
+
+.vc-file-upload-settings-sub {
+    display: grid;
+    gap: 10px;
+    margin-left: 6px;
+    padding-left: 14px;
+    border-left: 2px solid var(--border-subtle);
 }
 
 .vc-file-upload-settings-service-grid {
@@ -123,20 +315,24 @@
     min-height: 38px;
     border: 1px solid var(--border-subtle);
     border-radius: 8px;
-    background: var(--background-secondary);
+    background: var(--background-base-lower);
     color: var(--text-default);
     cursor: pointer;
     padding: 8px 10px;
     text-align: left;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 2px;
 }
 
 .vc-file-upload-settings-service-option:hover {
-    background: var(--background-modifier-hover);
+    background: var(--background-mod-subtle);
 }
 
 .vc-file-upload-settings-service-option[data-selected="true"] {
     border-color: var(--brand-500);
-    background: var(--background-modifier-selected);
+    background: var(--background-mod-strong);
 }
 
 .vc-file-upload-settings-service-option-label {
@@ -144,8 +340,89 @@
     font-weight: 500;
 }
 
+.vc-file-upload-settings-service-option-badge {
+    display: -webkit-box;
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.3;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+}
+
 .vc-file-upload-settings-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
+}
+
+.vc-file-upload-settings-secret-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.vc-file-upload-settings-secret-input {
+    flex: 1;
+    min-width: 0;
+}
+
+.vc-file-upload-settings-history-row {
+    flex-wrap: wrap;
+}
+
+.vc-file-upload-settings-history-row > .vc-file-upload-settings-secret-input {
+    flex-basis: 240px;
+}
+
+.vc-file-upload-settings-history-link {
+    overflow-wrap: anywhere;
+    user-select: text;
+    font-size: 14px;
+    color: var(--text-default);
+}
+
+.vc-file-upload-cors-prompt {
+    color: var(--text-default);
+    line-height: 1.45;
+}
+
+.vc-file-upload-cors-prompt p {
+    margin-bottom: 14px;
+}
+
+.vc-file-upload-cors-prompt ul {
+    list-style: disc;
+    padding-left: 22px;
+    margin: 0 0 16px;
+}
+
+.vc-file-upload-cors-prompt li {
+    margin-bottom: 8px;
+}
+
+.vc-file-upload-cors-prompt a {
+    color: var(--text-link);
+}
+
+.vc-file-upload-cors-prompt details {
+    margin-top: 6px;
+    color: var(--text-muted);
+}
+
+.vc-file-upload-cors-prompt summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--text-default);
+    margin-bottom: 12px;
+}
+
+.vc-file-upload-progress-cancel:focus-visible,
+.vc-file-upload-progress-queue-toggle:focus-visible,
+.vc-file-upload-progress-queue-remove:focus-visible,
+.vc-file-upload-progress-copy:focus-visible,
+.vc-file-upload-settings-service-option:focus-visible,
+.vc-file-upload-settings-fallback-order-item:focus-visible {
+    box-shadow: 0 0 0 2px var(--border-focus, #00b0f4);
 }
