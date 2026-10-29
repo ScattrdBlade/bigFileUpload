@@ -38,7 +38,7 @@ export function failedBeforeSending(f: UploadFailure): boolean {
     return f.stage === "connect" && (f.stageReliable || PRE_HANDSHAKE_CODES.has(f.code));
 }
 
-export type NativeErrorCode = "cancelled" | "stalled" | "network" | "tls" | "http" | "local";
+export type NativeErrorCode = "cancelled" | "stalled" | "network" | "tls" | "http" | "local" | "approval";
 
 export const RESPONSE_GRACE_MS = 5 * 60 * 1000;
 
@@ -167,6 +167,31 @@ export function describeNetworkError(error: unknown, stage?: UploadFailure["stag
 }
 
 export const PROXY_MAX_BODY_BYTES = 99_000_000;
+
+export const BUILT_IN_UPLOAD_HOSTS: ReadonlySet<string> = new Set([
+    "catbox.moe", "litterbox.catbox.moe", "0x0.st", "tmpfiles.org", "upload.gofile.io", "w.buzzheavier.com", "temp.sh", "filebin.net",
+    "api.e-z.host", "nest.rip", "encrypting.host", "pixelvault.co", "pixeldrain.com"
+]);
+
+const PRESET_PROXY_HOSTS: ReadonlySet<string> = new Set(["cors.keiran0.workers.dev"]);
+
+const bareHost = (hostname: string) => hostname.toLowerCase().replace(/\.$/, "");
+
+export function approvalTarget(url: string): string | null {
+    if (typeof url !== "string" || !URL.canParse(url)) return null;
+    const link = new URL(url);
+    if (!PRESET_PROXY_HOSTS.has(bareHost(link.hostname))) return url;
+    const wrapped = link.searchParams.getAll("url");
+    const target = wrapped.length === 1 && URL.canParse(wrapped[0]) ? new URL(wrapped[0]) : null;
+    return target && /^https?:$/.test(target.protocol) && !PRESET_PROXY_HOSTS.has(bareHost(target.hostname)) ? target.href : null;
+}
+
+export function isBuiltInOrigin(url: string): boolean {
+    const target = approvalTarget(url);
+    if (target === null) return false;
+    const { protocol, port, hostname } = new URL(target);
+    return protocol === "https:" && !port && BUILT_IN_UPLOAD_HOSTS.has(bareHost(hostname));
+}
 
 export function isDiscordMediaHost(hostname: string): boolean {
     const host = hostname.toLowerCase().replace(/\.$/, "");

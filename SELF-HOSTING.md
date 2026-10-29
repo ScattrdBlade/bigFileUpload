@@ -24,14 +24,14 @@ Leave **My Proxy Passes Redirects Back Unchanged** unticked unless your proxy re
 **Caveats:**
 
 - Cloudflare always adds `CF-Worker: <your zone>` to the worker's requests, so file hosts learn the zone name.
-- Your proxy wraps video links only if you turn on **Use My Proxy for Video Links** for that proxy address, and only when it is https on a public name. Its address then appears in every video link you post, which publishes your account subdomain and any secret path, and anyone in the channel can spend your quota. It also turns your worker into a public relay under your Cloudflare account (abuse reports and suspension are possible), and its logs would record every viewer's IP address. A custom domain hides the subdomain, not the path. With the switch off, video links use autocompressor.net while it is up, or stay plain.
+- Your proxy wraps video links only if you turn on **Use My Proxy for Video Links** for that proxy address, and only when it is https on a public name. Its address then appears in every video link you post, which publishes your account subdomain and any secret path, and anyone in the channel can spend your quota. It also turns your worker into a public relay under your Cloudflare account (abuse reports and suspension are possible), and its logs would record every viewer's IP address. A custom domain hides the subdomain, not the path. With the switch off, video links use autocompressor.net while it is up, then x266.mov, or stay plain.
 - It doesn't help where Cloudflare itself is throttled (for example Russia since 9 June 2025). Use option 2 there.
 - Avoid Vercel and Netlify for this: their request bodies are capped at 4.5 MB.
 
 **What the worker below already does** (keep these if you write your own):
 
 - Drops `X-Forwarded-For`, `X-Real-IP`, `True-Client-IP`, `CF-Connecting-IP`, `Cookie` and `Referer` before forwarding
-- Streams the upload with `FixedLengthStream` when the size is known, which keeps the `Content-Length` header hosts such as Catbox need and avoids holding up to 100 MB in a 128 MB worker
+- Streams the upload with `FixedLengthStream` when the size is known, which keeps the `Content-Length` header hosts such as Catbox need and avoids holding up to 100 MB in a 128 MB worker. Without a known size it holds at most 4 MiB and answers 413 above that, before contacting the host
 - Answers only `https://discord.com`, `https://ptb.discord.com` and `https://canary.discord.com` among browser origins (403 for others), and still accepts requests with no `Origin`, which the desktop retry sends
 - Relays only to the hosts in `ALLOWED_TARGET_HOSTS`, so a posted video link can't turn it into an open relay for anything else. Keep `interactive-examples.mdn.mozilla.net` in the list: BigFileUpload's video check asks the proxy for a public sample video there (MDN's `flower.mp4`), and a proxy that refuses it counts as down, so video links stay plain. On Vencord Web, after your proxy passes that check, the autocompressor.net and x266.mov checks can also go through it. Add `autocompressor.net` and `x266.mov` if you use them there
 - Reflects the allowed Origin in its CORS answer, answers `HEAD` (BigFileUpload's video check uses it), forwards the request's `Origin` upstream and passes the upstream's `Access-Control-Expose-Headers` through, so an S3 bucket's exposed `ETag` reaches the plugin for multipart uploads
@@ -156,17 +156,41 @@ export default {
             request.method !== "HEAD" &&
             request.body
         ) {
-            const length = Number(request.headers.get("Content-Length"));
-            if (
-                Number.isFinite(length) &&
-                length > 0 &&
-                typeof FixedLengthStream === "function"
-            ) {
+            const rawLength = request.headers.get("Content-Length");
+            const length = rawLength == null ? null : Number(rawLength);
+            if (length !== null && (!/^\d+$/.test(rawLength) || !Number.isSafeInteger(length)))
+                return reply(400, "Invalid Content-Length", origin);
+            if (length !== null && typeof FixedLengthStream === "function") {
                 const { readable, writable } = new FixedLengthStream(length);
                 request.body.pipeTo(writable).catch(() => {});
                 body = readable;
             } else {
-                body = await request.arrayBuffer();
+                const limit = 4 * 1024 * 1024;
+                const reader = request.body.getReader();
+                const chunks = [];
+                let size = 0;
+                try {
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        if (value.byteLength > limit - size) {
+                            await reader.cancel();
+                            return reply(413, "Uploads without a known length are limited to 4 MiB", origin);
+                        }
+                        size += value.byteLength;
+                        chunks.push(value);
+                    }
+                } catch {
+                    return reply(400, "The request body couldn't be read", origin);
+                } finally {
+                    reader.releaseLock();
+                }
+                body = new Uint8Array(size);
+                let offset = 0;
+                for (const chunk of chunks) {
+                    body.set(chunk, offset);
+                    offset += chunk.byteLength;
+                }
             }
         }
 

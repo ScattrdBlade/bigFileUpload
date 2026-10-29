@@ -91,7 +91,7 @@ function decodeEntities(text: string): string {
     return text.replace(/&(?:#(\d{1,7})|#x([\da-f]{1,6})|([a-z]+));/gi, (match, dec: string, hex: string, name: string) => {
         const code = dec ? Number(dec) : hex ? parseInt(hex, 16) : NaN;
         if (Number.isInteger(code)) return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : "";
-        return ENTITIES[name.toLowerCase()] ?? match;
+        return Object.hasOwn(ENTITIES, name.toLowerCase()) ? ENTITIES[name.toLowerCase()] : match;
     });
 }
 
@@ -282,6 +282,8 @@ let queue: Promise<void> = Promise.resolve();
 
 const deleting = new Set<string>();
 
+const forgetLater = new Map<string, string[]>();
+
 const listeners = new Set<() => void>();
 
 let version = 0;
@@ -301,12 +303,18 @@ export function useUploadHistory(): number {
 }
 
 function setCache(entries: HistoryEntry[]): void {
+    for (const gone of cache.filter(e => deleting.has(e.id) && !entries.some(next => next.id === e.id))) {
+        const secrets = secretsOf(gone);
+        for (const secret of secrets) rememberSessionSecret(secret);
+        forgetLater.set(gone.id, secrets);
+    }
     cache = entries;
     setHistorySecrets(entries.flatMap(secretsOf));
     notify();
 }
 
 export function loadUploadHistory(): Promise<void> {
+    openHistoryChannel();
     return loading ??= Promise.resolve().then(async () => {
         try {
             setCache(asEntries(await DataStore.get<unknown>(KEY)));
@@ -323,15 +331,49 @@ async function loadForWrite(): Promise<void> {
     if (!loaded) throw new Error("the stored history couldn't be read, so it wasn't written over");
 }
 
-function change(edit: (entries: HistoryEntry[]) => HistoryEntry[]): Promise<void> {
+let historyChannel: BroadcastChannel | null = null;
+
+function invalidateHistory(): void {
+    queue = queue.then(async () => {
+        loading = null;
+        await loadUploadHistory();
+    }).catch(error => logger.warn("Couldn't refresh this device's upload history", error));
+}
+
+function openHistoryChannel(): void {
+    if (historyChannel || typeof BroadcastChannel !== "function") return;
+    try {
+        historyChannel = new BroadcastChannel("BigFileUpload_history");
+        historyChannel.onmessage = invalidateHistory;
+    } catch (error) {
+        logger.warn("Couldn't watch upload history in other tabs", error);
+    }
+}
+
+function change(edit: (entries: HistoryEntry[]) => HistoryEntry[], forgetRemoved = false): Promise<boolean> {
+    let saved = false;
     queue = queue.then(async () => {
         await loadForWrite();
-        const next = edit(cache).slice(0, MAX_HISTORY);
-        for (const gone of cache) if (!next.includes(gone)) for (const s of secretsOf(gone)) rememberSessionSecret(s);
+        let before: HistoryEntry[] = [], next: HistoryEntry[] = [];
+        await DataStore.update<unknown>(KEY, stored => {
+            before = asEntries(stored);
+            next = edit(before).slice(0, MAX_HISTORY);
+            return next;
+        });
+        for (const gone of before.filter(e => !next.includes(e))) {
+            const secrets = secretsOf(gone);
+            if (forgetRemoved && !deleting.has(gone.id)) {
+                for (const secret of secrets) forgetSessionSecret(secret);
+            } else {
+                for (const secret of secrets) rememberSessionSecret(secret);
+                if (forgetRemoved) forgetLater.set(gone.id, secrets);
+            }
+        }
         setCache(next);
-        await DataStore.set(KEY, next);
+        saved = true;
+        try { historyChannel?.postMessage(null); } catch { }
     }).catch(error => logger.warn("Couldn't save this device's upload history", error));
-    return queue;
+    return queue.then(() => saved);
 }
 
 export function uploadHistory(): readonly HistoryEntry[] {
@@ -345,34 +387,15 @@ export const newHistoryId = () => `${Date.now().toString(36)}-${randomHexBytes(4
 
 export function addHistoryEntry(entry: HistoryEntry): Promise<void> {
     for (const s of secretsOf(entry)) rememberSessionSecret(s);
-    return change(entries => [entry, ...entries.filter(e => e.id !== entry.id)]);
+    return change(entries => [entry, ...entries.filter(e => e.id !== entry.id)]).then(() => {});
 }
 
 export function removeHistoryEntry(id: string): Promise<void> {
-    return change(entries => entries.filter(e => e.id !== id));
+    return change(entries => entries.filter(e => e.id !== id)).then(() => {});
 }
 
-const forgetLater = new Map<string, string[]>();
-
 function forget(drop: (e: HistoryEntry) => boolean): Promise<boolean> {
-    let saved = false;
-    queue = queue.then(async () => {
-        await loadForWrite();
-        const gone = cache.filter(drop);
-        setCache(cache.filter(e => !gone.includes(e)));
-        for (const e of gone) {
-            const secrets = secretsOf(e);
-            if (deleting.has(e.id)) {
-                for (const s of secrets) rememberSessionSecret(s);
-                forgetLater.set(e.id, secrets);
-            } else {
-                for (const s of secrets) forgetSessionSecret(s);
-            }
-        }
-        await DataStore.set(KEY, cache);
-        saved = true;
-    }).catch(error => logger.warn("Couldn't save this device's upload history", error));
-    return queue.then(() => saved);
+    return change(entries => entries.filter(e => !drop(e)), true);
 }
 
 export const forgetHistoryEntry = (id: string) => forget(e => e.id === id);

@@ -30,18 +30,21 @@ export interface HostQuestion {
     cancelText?: string;
 }
 
+function oneShot<T>() {
+    let resolve: (value: T) => void;
+    const answer = new Promise<T>(r => { resolve = r; });
+    let done = false;
+    return { answer, settle: (value: T) => {
+        if (done) return;
+        done = true;
+        resolve(value);
+    } };
+}
+
 let nextKey = 1;
 
 export function askToUseHost({ title, question, confirmText, cancelText = "Cancel upload" }: HostQuestion): { answer: Promise<boolean>; close(): void; readonly failed: boolean; } {
-    let settle: (ok: boolean) => void = () => { };
-    const answer = new Promise<boolean>(resolve => {
-        let done = false;
-        settle = ok => {
-            if (done) return;
-            done = true;
-            resolve(ok);
-        };
-    });
+    const { answer, settle } = oneShot<boolean>();
     const modalKey = `bfu-ask-host-${nextKey++}`;
     let broken = false;
     const failed = (error: unknown) => {
@@ -92,37 +95,31 @@ export type TakeoverAnswer = "upload" | "choose" | "dismissed" | "failed";
 let nextNoticeKey = 1;
 
 export function askTakeover(text: string): Promise<TakeoverAnswer> {
-    return new Promise(resolve => {
-        let done = false;
-        const settle = (answer: TakeoverAnswer) => {
-            if (done) return;
-            done = true;
-            resolve(answer);
-        };
-        const modalKey = `bfu-takeover-${nextNoticeKey++}`;
-        const failed = (error: unknown) => {
-            logger.error("Couldn't show the first-use notice", error);
-            settle("failed");
-        };
-        try {
-            openModal(props => (
-                <ErrorBoundary noop onError={({ error }) => { failed(error); setTimeout(() => closeModal(modalKey)); }}>
-                    <ConfirmModal
-                        {...props}
-                        title="BigFileUpload"
-                        subtitle={text}
-                        confirmText="Upload"
-                        cancelText="Choose host"
-                        variant="primary"
-                        onConfirm={() => settle("upload")}
-                        onCancel={() => settle("choose")}
-                    />
-                </ErrorBoundary>
-            ), { modalKey, onCloseCallback: () => setTimeout(() => settle("dismissed")) });
-        } catch (error) {
-            failed(error);
-        }
-    });
+    const { answer, settle } = oneShot<TakeoverAnswer>();
+    const modalKey = `bfu-takeover-${nextNoticeKey++}`;
+    const failed = (error: unknown) => {
+        logger.error("Couldn't show the first-use notice", error);
+        settle("failed");
+    };
+    try {
+        openModal(props => (
+            <ErrorBoundary noop onError={({ error }) => { failed(error); setTimeout(() => closeModal(modalKey)); }}>
+                <ConfirmModal
+                    {...props}
+                    title="BigFileUpload"
+                    subtitle={text}
+                    confirmText="Upload"
+                    cancelText="Choose host"
+                    variant="primary"
+                    onConfirm={() => settle("upload")}
+                    onCancel={() => settle("choose")}
+                />
+            </ErrorBoundary>
+        ), { modalKey, onCloseCallback: () => setTimeout(() => settle("dismissed")) });
+    } catch (error) {
+        failed(error);
+    }
+    return answer;
 }
 
 export function notifyBlockedHost(title: string, body: string, onClick: () => void): void {
@@ -158,28 +155,22 @@ function OriginRetryDialog({ modalProps, host, question, settle }: { modalProps:
 }
 
 export function askOriginRetry(host: string, question: string): Promise<OriginRetryAnswer> {
-    return new Promise(resolve => {
-        let done = false;
-        const settle = (answer: OriginRetryAnswer) => {
-            if (done) return;
-            done = true;
-            resolve(answer);
-        };
-        const modalKey = `bfu-origin-retry-${nextRetryKey++}`;
-        const failed = (error: unknown) => {
-            logger.error("Couldn't show the blocked-host question", error);
-            settle({ retry: false, always: false });
-        };
-        try {
-            openModal(props => (
-                <ErrorBoundary noop onError={({ error }) => { failed(error); setTimeout(() => closeModal(modalKey)); }}>
-                    <OriginRetryDialog modalProps={props} host={host} question={question} settle={settle} />
-                </ErrorBoundary>
-            ), { modalKey, onCloseCallback: () => setTimeout(() => settle({ retry: false, always: false })) });
-        } catch (error) {
-            failed(error);
-        }
-    });
+    const { answer, settle } = oneShot<OriginRetryAnswer>();
+    const modalKey = `bfu-origin-retry-${nextRetryKey++}`;
+    const failed = (error: unknown) => {
+        logger.error("Couldn't show the blocked-host question", error);
+        settle({ retry: false, always: false });
+    };
+    try {
+        openModal(props => (
+            <ErrorBoundary noop onError={({ error }) => { failed(error); setTimeout(() => closeModal(modalKey)); }}>
+                <OriginRetryDialog modalProps={props} host={host} question={question} settle={settle} />
+            </ErrorBoundary>
+        ), { modalKey, onCloseCallback: () => setTimeout(() => settle({ retry: false, always: false })) });
+    } catch (error) {
+        failed(error);
+    }
+    return answer;
 }
 
 export function notifyTakeover(text: string): void {
@@ -195,6 +186,7 @@ export interface LateCancelEntry {
     retention?: string;
     private?: boolean;
     shareInterrupted?: boolean;
+    shareFailed?: boolean;
     id: string;
 }
 
@@ -219,7 +211,7 @@ export function copyKeptLink(e: LateCancelEntry): void {
     Promise.resolve().then(() => copyToClipboard(e.url)).then(
         () => {
             const action = deleteAction(e.id);
-            const where = action && !action.problem ? "; delete it under Upload History in BigFileUpload's settings" : "";
+            const where = action && !action.problem ? ". Delete it under Upload History in BigFileUpload's settings" : "";
             showToast({ text: `Link for ${e.fileName} copied${where}`, variant: "success" });
         },
         () => openLateCancelDialog(e)
@@ -235,43 +227,75 @@ async function copyFromDialog(url: string) {
     }
 }
 
-function LateCancelDialog({ e, props }: { e: LateCancelEntry; props: { transitionState: number; onClose(): void; }; }) {
-    useUploadHistory();
-    const action = deleteAction(e.id);
-    const hostNote = e.shareInterrupted
-        ? "The share request was interrupted. Check the Shares list on your server, since a public link may have been created. This link opens only with your WebDAV login."
-        : e.private
-            ? "It isn't shared: the link opens only with your WebDAV login."
-            : null;
-    const deleteNote = action ? action.problem : hostNote ? null : `BigFileUpload can't delete it. It stays on ${describeHost(e)}.`;
-    const busy = isDeleting(e.id);
+function RecoveryDialog({ url, props, title, subtitle, actions = [], children }: {
+    url: string;
+    props: { transitionState: number; onClose(): void; };
+    title: string;
+    subtitle: string;
+    actions?: React.ComponentProps<typeof Modal>["actions"];
+    children?: React.ReactNode;
+}) {
     return (
         <Modal
             {...props}
-            title="Upload cancelled too late"
-            subtitle={`${e.fileName} is on ${describeHost(e)}`}
+            title={title}
+            subtitle={subtitle}
             actions={[
-                ...action && !action.problem ? [{
-                    text: action.label,
-                    variant: "critical-primary",
-                    loading: busy,
-                    disabled: busy,
-                    onClick: () => void action.run().then(done => { if (done) props.onClose(); })
-                }] : [],
-                { text: "Copy link", variant: "primary", onClick: () => void copyFromDialog(e.url) },
+                ...actions,
+                { text: "Copy link", variant: "primary", onClick: () => void copyFromDialog(url) },
                 { text: "Close", variant: "secondary", onClick: props.onClose }
             ]}
         >
-            <input
-                className={cl("late-link")}
-                readOnly
-                value={e.url}
-                onFocus={ev => ev.currentTarget.select()}
-            />
-            {hostNote && <div className={cl("late-note")}>{hostNote}</div>}
-            {deleteNote && <div className={cl("late-note")}>{deleteNote}</div>}
+            <input className={cl("late-link")} readOnly value={url} onFocus={ev => ev.currentTarget.select()} />
+            {children}
         </Modal>
     );
+}
+
+function LateCancelDialog({ e, props }: { e: LateCancelEntry; props: { transitionState: number; onClose(): void; }; }) {
+    useUploadHistory();
+    const action = deleteAction(e.id);
+    const hostNote = e.shareFailed
+        ? "The file is uploaded, but sharing wasn't confirmed. This link requires your WebDAV login. A public share may already exist, so check the Shares list on your server before trying again."
+        : e.shareInterrupted
+            ? "The share request was interrupted. Check the Shares list on your server, since a public link may have been created. This link opens only with your WebDAV login."
+            : e.private
+                ? "It isn't shared: the link opens only with your WebDAV login."
+                : null;
+    const deleteNote = action ? action.problem : hostNote ? null : `BigFileUpload can't delete it. It stays on ${describeHost(e)}.`;
+    return (
+        <RecoveryDialog
+            url={e.url}
+            props={props}
+            title={e.shareFailed ? "WebDAV upload kept" : "Upload cancelled too late"}
+            subtitle={`${e.fileName} is on ${describeHost(e)}`}
+            actions={action && !action.problem ? [{
+                text: action.label,
+                variant: "critical-primary",
+                loading: isDeleting(e.id),
+                disabled: isDeleting(e.id),
+                onClick: () => void action.run().then(done => { if (done) props.onClose(); })
+            }] : []}
+        >
+            {hostNote && <div className={cl("late-note")}>{hostNote}</div>}
+            {deleteNote && <div className={cl("late-note")}>{deleteNote}</div>}
+        </RecoveryDialog>
+    );
+}
+
+export function announceSendFailure(url: string, channel: string): void {
+    const title = "Uploaded link couldn't be sent";
+    const detail = `Discord couldn't send the link in ${channel}. Check the chat before trying again.`;
+    try {
+        showToast({ text: `Discord couldn't send the link in ${channel}. Open the BigFileUpload notification to copy it`, duration: 15000 });
+    } catch (error) {
+        logger.error("Couldn't show the late-send notice", error);
+    }
+    notifyBlockedHost(title, detail, () => openModal(props => <RecoveryDialog url={url} props={props} title={title} subtitle={detail} />));
+}
+
+export function announceKeptUpload(e: LateCancelEntry): void {
+    notifyBlockedHost("WebDAV upload kept", `${e.fileName} was uploaded, but sharing wasn't confirmed. Click to recover its private link or delete the file.`, () => openLateCancelDialog(e));
 }
 
 export function openLateCancelDialog(e: LateCancelEntry): void {
@@ -292,7 +316,6 @@ export function announceLateCancel(e: LateCancelEntry): void {
     });
 }
 
-const clCorsProxyPrompt = classNameFactory("vc-file-upload-");
 
 const MODAL_KEY = "bigfileupload-cors-proxy";
 
@@ -380,6 +403,7 @@ function openPrompt(notices = takeVersionNotices()): void {
         syncBusy();
     };
     const onAnswer = (accept: boolean, choice?: ProxyChoice, openedDraft?: string) => {
+        if (renderFailed) return;
         answered = true;
         try {
             if (accept && openedDraft !== undefined && proxyKey(initialDraft()) !== proxyKey(openedDraft)) {
@@ -444,9 +468,7 @@ function PromptModal({ modalProps, notices, onAnswer }: {
             onConfirm={() => onAnswer(true, choice, openedDraft)}
             onCancel={() => onAnswer(false)}
         >
-            <ErrorBoundary>
-                <PromptBody draft={choice.url} notices={notices} />
-            </ErrorBoundary>
+            <PromptBody draft={choice.url} notices={notices} />
         </ConfirmModal>
     );
 }
@@ -501,7 +523,7 @@ function PromptBody({ draft, notices }: { draft: string; notices: string[]; }) {
         : null;
 
     return (
-        <div className={clCorsProxyPrompt("cors-prompt")}>
+        <div className={cl("cors-prompt")}>
             {notices.length > 0 && (
                 <>
                     <p><strong>What changed in this update</strong></p>

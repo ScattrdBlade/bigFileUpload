@@ -7,16 +7,19 @@
 import { ApngBlendOp, ApngDisposeOp, parseAPNG } from "@utils/apng";
 import { GIFEncoder, nearestColorIndex, quantize } from "gifenc";
 
-import { logger } from "../types";
+import { CORS_PROXY, logger } from "../types";
 
-const imageExtensions = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "avif", "svg"];
+const imageExtensions = ["png", "apng", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "avif", "svg"];
 
 const videoExtensions = ["mp4", "webm", "ogg", "ogv", "avi", "wmv", "flv", "mov", "mkv", "m4v"];
 
-const supportedExtensions = [...imageExtensions, ...videoExtensions];
+const audioExtensions = ["mp3", "wav", "flac", "aac", "m4a", "oga", "opus", "aiff", "wma"];
+
+const supportedExtensions = [...imageExtensions, ...videoExtensions, ...audioExtensions];
 
 const mimeToExtension: Record<string, string> = {
     "image/png": "png",
+    "image/apng": "apng",
     "image/jpeg": "jpg",
     "image/gif": "gif",
     "image/webp": "webp",
@@ -30,6 +33,16 @@ const mimeToExtension: Record<string, string> = {
     "video/ogg": "ogv",
     "audio/ogg": "ogg",
     "audio/opus": "opus",
+    "audio/mpeg": "mp3",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "audio/flac": "flac",
+    "audio/x-flac": "flac",
+    "audio/aac": "aac",
+    "audio/mp4": "m4a",
+    "audio/aiff": "aiff",
+    "audio/x-aiff": "aiff",
+    "audio/x-ms-wma": "wma",
     "video/x-msvideo": "avi",
     "video/x-ms-wmv": "wmv",
     "video/x-flv": "flv",
@@ -40,34 +53,13 @@ const mimeToExtension: Record<string, string> = {
 
 export function getExtensionFromMime(mimeType: string): string | undefined {
     const baseMime = mimeType.split(";")[0].trim().toLowerCase();
-    return mimeToExtension[baseMime];
+    return Object.hasOwn(mimeToExtension, baseMime) ? mimeToExtension[baseMime] : undefined;
 }
 
-const extensionToMime: Record<string, string> = {
-    "png": "image/png",
-    "apng": "image/apng",
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "gif": "image/gif",
-    "webp": "image/webp",
-    "bmp": "image/bmp",
-    "ico": "image/x-icon",
-    "tiff": "image/tiff",
-    "avif": "image/avif",
-    "svg": "image/svg+xml",
-    "mp4": "video/mp4",
-    "webm": "video/webm",
-    "ogg": "audio/ogg",
-    "oga": "audio/ogg",
-    "opus": "audio/ogg",
-    "ogv": "video/ogg",
-    "avi": "video/x-msvideo",
-    "wmv": "video/x-ms-wmv",
-    "flv": "video/x-flv",
-    "mov": "video/quicktime",
-    "mkv": "video/x-matroska",
-    "m4v": "video/x-m4v"
-};
+const extensionToMime = Object.entries(mimeToExtension).reduce<Record<string, string>>((types, [mime, ext]) => {
+    types[ext] ??= mime;
+    return types;
+}, Object.assign(Object.create(null), { jpeg: "image/jpeg", oga: "audio/ogg", opus: "audio/ogg" }));
 
 export function getMimeFromExtension(ext?: string): string {
     return extensionToMime[ext?.toLowerCase() ?? ""] || "application/octet-stream";
@@ -186,23 +178,80 @@ export function toOriginalMediaUrl(url: string): string {
     return parsed.toString();
 }
 
-type MediaProps = { src?: string; href?: string; itemSrc?: string; itemHref?: string; target?: any; };
+type MediaProps = {
+    src?: string;
+    href?: string;
+    itemSrc?: string;
+    itemHref?: string;
+    itemSafeSrc?: string;
+    imageUrl?: string;
+    mediaItem?: { url?: string; };
+    item?: { original?: string; url?: string; };
+    target?: EventTarget | null;
+};
 
 export interface MediaUrls {
     url: string;
     discordProxyUrl?: string;
 }
 
-export function getMediaUrls(props: MediaProps): MediaUrls | null {
-    let candidates = [props.href, props.itemHref, props.src, props.itemSrc]
-        .filter((url): url is string => typeof url === "string" && url !== "" && isSupported(url));
+type EmbedVideo = { url?: string; proxyURL?: string; proxy_url?: string; contentType?: string; };
 
-    if (!candidates.length && props.target?.closest) {
-        const img = props.target.closest("img") || props.target.querySelector?.("img");
-        const video = props.target.closest("video") || props.target.querySelector?.("video");
-        const src = img?.src || video?.src;
-        if (src && isSupported(src)) candidates = [src];
+type MediaFiber = {
+    memoizedProps?: { video?: EmbedVideo; };
+    return?: MediaFiber | null;
+};
+
+function getEmbedVideo(target: Element): EmbedVideo | null {
+    // Unplayed embeds expose only their poster in the DOM.
+    const key = Object.keys(target).find(key => key.startsWith("__reactFiber$"));
+    let fiber = key ? (target as unknown as Record<string, MediaFiber>)[key] : null;
+    for (let i = 0; fiber && i < 40; i++, fiber = fiber.return ?? null) {
+        const video = fiber.memoizedProps?.video;
+        if (video && typeof video === "object") return video;
     }
+    return null;
+}
+
+export function getMediaUrls(props: MediaProps): MediaUrls | null {
+    const networkUrls = (urls: (string | undefined)[]) => urls.filter((url): url is string => {
+        const parsed = typeof url === "string" ? parseUrl(url) : null;
+        return parsed?.protocol === "https:" || parsed?.protocol === "http:";
+    });
+    const links = networkUrls([props.href, props.itemHref]).filter(isSupported);
+    const sources = networkUrls([props.item?.original, props.item?.url, props.mediaItem?.url, props.src, props.itemSrc, props.itemSafeSrc, props.imageUrl]);
+
+    if (props.target instanceof Element) {
+        const { target } = props;
+        const video = getEmbedVideo(target);
+        if (video) {
+            const urls = networkUrls([video.url, video.proxyURL, video.proxy_url]);
+            const proxy = networkUrls([video.proxyURL, video.proxy_url])[0];
+            const original = urls[0];
+            if (!original) return null;
+            const parsed = parseUrl(original)!;
+            const relayed = parsed.origin === CORS_PROXY && parsed.pathname === "/" ? networkUrls([parsed.searchParams.get("url") ?? undefined])[0] : undefined;
+            const videoUrl = videoExtensions.includes(getUrlExtension(relayed ?? original) ?? "");
+            const videoType = typeof video.contentType === "string" && video.contentType.toLowerCase().startsWith("video/");
+            if (!proxy && !videoUrl && !videoType) return null;
+
+            const url = toOriginalMediaUrl(relayed ?? original);
+            const discordProxyUrl = urls.find(isDiscordMediaUrl);
+            return discordProxyUrl && !isDiscordMediaUrl(url) ? { url, discordProxyUrl: toOriginalMediaUrl(discordProxyUrl) } : { url };
+        }
+
+        const imageLink = target.closest<HTMLAnchorElement>('a[data-role="img"]');
+        if (imageLink) sources.unshift(...networkUrls([imageLink.href, imageLink.getAttribute("data-safe-src") ?? undefined]));
+
+        const media = target.closest<HTMLImageElement | HTMLMediaElement>("img,video,audio")
+            ?? target.closest('[data-testid="discord-web-video-player-container"],[data-fullscreen][tabindex]')?.querySelector<HTMLMediaElement>("video,audio")
+            ?? target.closest("a,[data-role=img]")?.querySelector<HTMLImageElement | HTMLMediaElement>("img,video,audio");
+        if (media) {
+            sources.push(...networkUrls([media.currentSrc, media.src, media.querySelector("source")?.src]));
+        }
+    }
+
+    const candidates = [...links, ...sources];
 
     if (!candidates.length) return null;
 
@@ -211,6 +260,12 @@ export function getMediaUrls(props: MediaProps): MediaUrls | null {
 
     const proxied = candidates.find(isDiscordMediaUrl);
     return proxied ? { url, discordProxyUrl: toOriginalMediaUrl(proxied) } : { url };
+}
+
+export function mediaUnavailableReason(props: MediaProps): string | null {
+    return props.target instanceof Element && getEmbedVideo(props.target)
+        ? "Discord has no direct link to this video's file. Open its source to get the file, then attach it"
+        : null;
 }
 
 export const GIF_TRANSPARENT_INDEX = 0;
@@ -225,11 +280,64 @@ const MAX_FRAME_PIXELS = 4096 * 4096;
 
 const MAX_TOTAL_PIXELS = 2 ** 28;
 
+const MAX_APNG_FRAMES = 2000;
+
+function preflightApng(buffer: ArrayBuffer): boolean {
+    const bytes = new Uint8Array(buffer);
+    if (![137, 80, 78, 71, 13, 10, 26, 10].every((byte, i) => bytes[i] === byte)) return false;
+    const view = new DataView(buffer);
+    let width = 0, height = 0, declaredFrames = 0, frames = 0, sequence = 0;
+    let frameHasData = false, hasImageData = false;
+    for (let offset = 8; offset + 12 <= bytes.length;) {
+        const length = view.getUint32(offset);
+        if (length > bytes.length - offset - 12) return false;
+        const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8));
+        const data = offset + 8;
+        if (offset === 8 && type !== "IHDR") return false;
+        switch (type) {
+            case "IHDR":
+                if (offset !== 8 || length !== 13) return false;
+                width = view.getUint32(data);
+                height = view.getUint32(data + 4);
+                if (!width || !height || width > 4096 || height > 4096 || width * height > MAX_FRAME_PIXELS) return false;
+                break;
+            case "acTL":
+                if (length !== 8 || declaredFrames || hasImageData || frames) return false;
+                declaredFrames = view.getUint32(data);
+                if (!declaredFrames || declaredFrames > MAX_APNG_FRAMES || declaredFrames * width * height > MAX_TOTAL_PIXELS) return false;
+                break;
+            case "fcTL": {
+                if (length !== 26 || !declaredFrames || (frames && !frameHasData) || ++frames > declaredFrames) return false;
+                if (view.getUint32(data) !== sequence++) return false;
+                const w = view.getUint32(data + 4), h = view.getUint32(data + 8);
+                const left = view.getUint32(data + 12), top = view.getUint32(data + 16);
+                if (!w || !h || w + left > width || h + top > height || bytes[data + 24] > 2 || bytes[data + 25] > 1) return false;
+                frameHasData = false;
+                break;
+            }
+            case "fdAT":
+                if (length < 4 || !frames || !hasImageData || view.getUint32(data) !== sequence++) return false;
+                frameHasData = true;
+                break;
+            case "IDAT":
+                if (frames > 1) return false;
+                hasImageData = true;
+                if (frames) frameHasData = true;
+                break;
+            case "IEND":
+                return length === 0 && hasImageData && frameHasData && frames === declaredFrames && frames > 0;
+        }
+        offset += length + 12;
+    }
+    return false;
+}
+
 function nextTurn(): Promise<void> {
     return new Promise(resolve => {
         const { port1, port2 } = new MessageChannel();
         port1.onmessage = () => {
             port1.close();
+            port2.close();
             resolve();
         };
         port2.postMessage(null);
@@ -241,15 +349,20 @@ export function gifRepeat(numPlays: number): number {
     return numPlays === 1 ? -1 : Math.min(numPlays - 1, 0xFFFF);
 }
 
-export async function framePalette(data: Uint8ClampedArray | Uint8Array): Promise<{ palette: number[][]; index: Uint8Array; }> {
+export async function framePalette(data: Uint8ClampedArray | Uint8Array, checkCancelled = () => {}): Promise<{ palette: number[][]; index: Uint8Array; }> {
+    checkCancelled();
     const pixels = data.length >> 2;
     let opaque = 0;
-    for (let p = 0; p < pixels; p++) if (data[p * 4 + 3] >= ALPHA_THRESHOLD) opaque++;
+    for (let p = 0; p < pixels; p++) {
+        if (p && p % PIXELS_PER_TURN === 0) { await nextTurn(); checkCancelled(); }
+        if (data[p * 4 + 3] >= ALPHA_THRESHOLD) opaque++;
+    }
 
     const stride = Math.max(1, Math.ceil(opaque / PALETTE_SAMPLE_PIXELS));
     const sample = new Uint8Array(Math.ceil(opaque / stride) * 4);
     let sampled = 0;
     for (let p = 0, seen = 0; p < pixels && sampled < sample.length; p++) {
+        if (p && p % PIXELS_PER_TURN === 0) { await nextTurn(); checkCancelled(); }
         const o = p * 4;
         if (data[o + 3] < ALPHA_THRESHOLD || seen++ % stride) continue;
         sample[sampled] = data[o];
@@ -260,10 +373,12 @@ export async function framePalette(data: Uint8ClampedArray | Uint8Array): Promis
     }
 
     const colours = sampled ? quantize(sample.slice(0, sampled), 255) : [[0, 0, 0]];
+    checkCancelled();
     const index = new Uint8Array(pixels);
     const cache = new Uint16Array(65536).fill(0xFFFF);
     for (let start = 0; start < pixels; start += PIXELS_PER_TURN) {
         if (start) await nextTurn();
+        checkCancelled();
         const end = Math.min(pixels, start + PIXELS_PER_TURN);
         for (let p = start; p < end; p++) {
             const o = p * 4;
@@ -281,12 +396,22 @@ export async function framePalette(data: Uint8ClampedArray | Uint8Array): Promis
     return { palette: [[0, 0, 0], ...colours], index };
 }
 
-export async function convertApngToGif(blob: Blob): Promise<Blob | null> {
+export async function convertApngToGif(blob: Blob, checkCancelled = () => {}): Promise<Blob | null> {
     let frames: Awaited<ReturnType<typeof parseAPNG>>["frames"] = [];
     const canvas = document.createElement("canvas");
     try {
-        const animation = await parseAPNG(await blob.arrayBuffer());
+        checkCancelled();
+        if (blob.size > 32 * 1024 * 1024) return null;
+        const buffer = await blob.arrayBuffer();
+        checkCancelled();
+        // The shared parser allocates chunks and starts all frame decoders immediately.
+        if (!preflightApng(buffer)) {
+            logger.warn("APNG not converted: it's malformed or too large to convert");
+            return null;
+        }
+        const animation = await parseAPNG(buffer);
         ({ frames } = animation);
+        checkCancelled();
         const { width, height } = animation;
         if (!frames.length) return null;
         if (width * height > MAX_FRAME_PIXELS || frames.length * width * height > MAX_TOTAL_PIXELS) {
@@ -303,6 +428,7 @@ export async function convertApngToGif(blob: Blob): Promise<Blob | null> {
 
         for (const frame of frames) {
             await nextTurn();
+            checkCancelled();
             const { left, top, width: frameWidth, height: frameHeight, img, delay, blendOp, disposeOp } = frame;
 
             const previousFrameData = disposeOp === ApngDisposeOp.PREVIOUS ? ctx.getImageData(left, top, frameWidth, frameHeight) : null;
@@ -314,7 +440,7 @@ export async function convertApngToGif(blob: Blob): Promise<Blob | null> {
             ctx.drawImage(img, left, top, frameWidth, frameHeight);
 
             const { data } = ctx.getImageData(0, 0, width, height);
-            const { palette, index } = await framePalette(data);
+            const { palette, index } = await framePalette(data, checkCancelled);
 
             gif.writeFrame(index, width, height, {
                 transparent: true,
@@ -334,6 +460,7 @@ export async function convertApngToGif(blob: Blob): Promise<Blob | null> {
         gif.finish();
         return new Blob([gif.bytesView() as unknown as BlobPart], { type: "image/gif" });
     } catch (e) {
+        checkCancelled();
         logger.error("APNG to GIF conversion error:", e);
         return null;
     } finally {

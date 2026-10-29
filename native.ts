@@ -4,22 +4,132 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+import { NativeSettings } from "@main/settings";
 import { createHash, Hash, randomUUID } from "crypto";
 import { subscribe } from "diagnostics_channel";
 import { lookup } from "dns/promises";
-import { IpcMainInvokeEvent, WebContents } from "electron";
+import { BrowserWindow, dialog, IpcMainInvokeEvent, MessageBoxOptions, WebContents } from "electron";
 import { constants, rmSync } from "fs";
 import { FileHandle, lstat, mkdir, open, readdir, stat, statfs, unlink } from "fs/promises";
+import { request as httpsRequest, RequestOptions } from "https";
 import { isIP } from "net";
 import { tmpdir } from "os";
 import { join } from "path";
+import { Readable, Transform } from "stream";
+import { pipeline } from "stream/promises";
+import { constants as zlibConstants, createBrotliDecompress, createGunzip, createInflate, createInflateRaw } from "zlib";
 
-import { classifyFetchError, classifyHttpBlock, describeNetworkError, firstErrorCode, httpHostKind, httpLanOnlyText, isDnsCode, isPrivateAddress, isPublicSourceAddress, NATIVE_MAX_BUFFER, NativeErrorCode, PROXY_RETRY_KINDS, RESPONSE_GRACE_MS, SPOOL_HEAD_BYTES, SPOOL_MAX_BYTES, SPOOL_SLICE_BYTES, SpoolSource, UploadAbortError, UploadFailure } from "./utils/shared";
+import { approvalTarget, classifyFetchError, classifyHttpBlock, describeNetworkError, firstErrorCode, httpHostKind, httpLanOnlyText, isBuiltInOrigin, isDnsCode, isPrivateAddress, isPublicSourceAddress, NATIVE_MAX_BUFFER, NativeErrorCode, PROXY_RETRY_KINDS, RESPONSE_GRACE_MS, SPOOL_HEAD_BYTES, SPOOL_MAX_BYTES, SPOOL_SLICE_BYTES, SpoolSource, UploadAbortError, UploadFailure } from "./utils/shared";
+
+const sessionOrigins = new Set<string>();
+
+const pendingApprovals = new Map<string, Promise<OriginApproval>>();
+
+type OriginApproval = "approved" | "trusted" | "allowed" | "cancelled";
+
+const APPROVAL_TEXT = "This server wasn't approved for uploads";
+
+function httpOrigin(url: unknown): string | null {
+    if (typeof url !== "string" || !URL.canParse(url)) return null;
+    const { protocol, origin } = new URL(url);
+    return protocol === "https:" || protocol === "http:" ? origin : null;
+}
+
+const approvalOrigin = (url: string) => httpOrigin(approvalTarget(url));
+
+function trustedOrigins(): string[] {
+    const saved = NativeSettings.store.plugins.BigFileUpload?.approvedOrigins;
+    return Array.isArray(saved) ? saved.filter((origin): origin is string => typeof origin === "string") : [];
+}
+
+function originApproved(url: string): boolean {
+    const origin = approvalOrigin(url);
+    return origin !== null && (isBuiltInOrigin(url) || sessionOrigins.has(origin) || trustedOrigins().includes(origin));
+}
+
+const unapproved = (url: string) => httpOrigin(url) !== null && !originApproved(url);
+
+async function askOrigin(e: IpcMainInvokeEvent, origin: string): Promise<OriginApproval> {
+    try {
+        const options: MessageBoxOptions = {
+            type: "warning", title: "BigFileUpload", noLink: true,
+            message: `BigFileUpload wants to upload to ${new URL(origin).host}`,
+            detail: `Server: ${origin}\n\nOnly trust servers you recognise. Trust remembers it on this device. Allow until restart permits it until Discord restarts.`,
+            buttons: ["Trust", "Allow until restart", "Cancel"], defaultId: 2, cancelId: 2
+        };
+        const window = BrowserWindow.fromWebContents(e.sender);
+        const { response } = window ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
+        if (response === 0) {
+            const { plugins } = NativeSettings.store;
+            plugins.BigFileUpload ??= {};
+            plugins.BigFileUpload.approvedOrigins = [...new Set([...trustedOrigins(), origin])];
+            return "trusted";
+        }
+        if (response === 1) {
+            sessionOrigins.add(origin);
+            return "allowed";
+        }
+    } catch { }
+    return "cancelled";
+}
+
+export async function requestOriginApproval(e: IpcMainInvokeEvent, url: string): Promise<OriginApproval> {
+    const origin = approvalOrigin(url);
+    if (!origin) return "cancelled";
+    if (originApproved(url)) return "approved";
+    let pending = pendingApprovals.get(origin);
+    if (!pending) {
+        pending = askOrigin(e, origin).finally(() => pendingApprovals.delete(origin));
+        pendingApprovals.set(origin, pending);
+    }
+    return pending;
+}
+
+export async function listApprovedOrigins(): Promise<string[]> {
+    try {
+        return trustedOrigins();
+    } catch {
+        return [];
+    }
+}
+
+export async function forgetApprovedOrigins(): Promise<boolean> {
+    sessionOrigins.clear();
+    try {
+        const plugin = NativeSettings.store.plugins.BigFileUpload;
+        if (plugin && "approvedOrigins" in plugin) delete plugin.approvedOrigins;
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+let transferOwner: number | null = null;
+
+let lastOwner: number | null = null;
+
+type NativeBusy = SourceFailure & { busy: true; };
+
+async function withNativeTransfer<T>(e: IpcMainInvokeEvent, run: () => Promise<T>): Promise<T | NativeBusy> {
+    if (transferOwner !== null) return { success: false, busy: true, code: "local", error: "Another window is transferring a file. Try again when it finishes" };
+    transferOwner = e.sender.id;
+    if (lastOwner !== transferOwner) resetProgress();
+    lastOwner = transferOwner;
+    watchSender(e.sender);
+    try {
+        return await run();
+    } finally {
+        activeUploadController?.abort();
+        activeUploadController = null;
+        streamGeneration++;
+        transferOwner = null;
+    }
+}
 
 let uploadProgress: { loaded: number; total: number; phase?: "downloading"; } = { loaded: 0, total: 0 };
 
-export async function getUploadProgress(_: IpcMainInvokeEvent): Promise<{ loaded: number; total: number; phase: "uploading" | "downloading"; stallWatch: true; }> {
-    const { loaded, total, phase = "uploading" } = uploadProgress;
+export async function getUploadProgress(e: IpcMainInvokeEvent): Promise<{ loaded: number; total: number; phase: "uploading" | "downloading"; stallWatch: true; }> {
+    const { loaded, total, phase = "uploading" } = (transferOwner ?? lastOwner) === e.sender.id ? uploadProgress : { loaded: 0, total: 0 };
     return { loaded, total, phase, stallWatch: true };
 }
 
@@ -125,20 +235,27 @@ function watchForStall(stallMs: number): () => void {
     return () => clearInterval(timer);
 }
 
-export async function resetUploadProgress(_: IpcMainInvokeEvent): Promise<void> {
+function resetProgress(): void {
     uploadProgress = { loaded: 0, total: 0 };
     abortLatch = null;
     lateCancel = false;
     stallText = null;
 }
 
-let activeUploadController: AbortController | null = null;
-
-export async function cancelUpload(_: IpcMainInvokeEvent, reason: "user" | "stalled" = "user"): Promise<void> {
-    latchAbort(reason === "stalled" ? "stalled" : "user");
+export async function resetUploadProgress(e: IpcMainInvokeEvent): Promise<void> {
+    if (transferOwner !== null) return;
+    lastOwner = e.sender.id;
+    resetProgress();
 }
 
-export async function cancelUploadUnlessBodySent(_: IpcMainInvokeEvent): Promise<boolean> {
+let activeUploadController: AbortController | null = null;
+
+export async function cancelUpload(e: IpcMainInvokeEvent, reason: "user" | "stalled" = "user"): Promise<void> {
+    if ((transferOwner ?? lastOwner) === e.sender.id) latchAbort(reason === "stalled" ? "stalled" : "user");
+}
+
+export async function cancelUploadUnlessBodySent(e: IpcMainInvokeEvent): Promise<boolean> {
+    if ((transferOwner ?? lastOwner) !== e.sender.id) return false;
     if (uploadRunning && bodySent) {
         lateCancel = true;
         return true;
@@ -275,6 +392,7 @@ function watchSender(sender: WebContents): void {
     watchedSenders.add(id);
     sender.once("destroyed", () => {
         watchedSenders.delete(id);
+        if (transferOwner === id) latchAbort("user");
         for (const [spoolId, spool] of spools) if (spool.owner === id) void releaseSpool(spoolId);
     });
 }
@@ -358,7 +476,7 @@ export async function spoolOpen(e: IpcMainInvokeEvent, size: number, session = "
 export async function spoolWrite(e: IpcMainInvokeEvent, id: string, offset: number, chunk: ArrayBuffer | ArrayBufferView): Promise<{ success: boolean; written?: number; sha256?: string; error?: string; cancelled?: true; }> {
     const spool = ownedSpool(e, id);
     if (!spool) return { success: false, error: "The temporary upload file is gone" };
-    if (abortLatch?.reason === "user") return { success: false, cancelled: true, error: "Upload cancelled by user" };
+    if (lastOwner === e.sender.id && abortLatch?.reason === "user") return { success: false, cancelled: true, error: "Upload cancelled by user" };
     if (spool.sha256 !== undefined || spool.writing) return { success: false, error: "The temporary upload file isn't writable now" };
     if (offset !== spool.written) return { success: false, error: "File slices arrived out of order" };
     const bytes = chunk instanceof ArrayBuffer || ArrayBuffer.isView(chunk) ? asBytes(chunk) : null;
@@ -458,6 +576,8 @@ function progressStream(parts: BodyPart[], signal: AbortSignal): ReadableStream<
     let offset = 0;
     let loaded = 0;
     let file: FileHandle | null = null;
+    let cancelled = false;
+    const stopped = () => cancelled || signal.aborted || generation !== streamGeneration;
     const closeFile = async () => {
         const handle = file;
         file = null;
@@ -465,7 +585,7 @@ function progressStream(parts: BodyPart[], signal: AbortSignal): ReadableStream<
     };
     return new ReadableStream({
         async pull(controller) {
-            if (signal.aborted || generation !== streamGeneration) {
+            if (stopped()) {
                 await closeFile();
                 controller.error(new Error("The request was stopped"));
                 return;
@@ -475,6 +595,7 @@ function progressStream(parts: BodyPart[], signal: AbortSignal): ReadableStream<
                 index++;
                 offset = 0;
             }
+            if (stopped()) return controller.error(new Error("The request was stopped"));
             if (index >= parts.length) {
                 bodyDone = true;
                 controller.close();
@@ -489,14 +610,17 @@ function progressStream(parts: BodyPart[], signal: AbortSignal): ReadableStream<
                 chunk = new Uint8Array(Math.min(SPOOL_READ_CHUNK, part.length - offset));
                 try {
                     file ??= await openSpoolFile(part);
+                    if (stopped()) throw new Error("The request was stopped");
                     for (let done = 0; done < chunk.length;) {
                         const { bytesRead } = await file.read(chunk, done, chunk.length - done, part.start + offset + done);
+                        if (stopped()) throw new Error("The request was stopped");
                         if (!bytesRead) throw new Error("it ended early");
                         done += bytesRead;
                     }
                 } catch (error) {
-                    bodyReadError = `Reading the temporary upload file failed (${errorCodeOf(error) ?? (error instanceof Error ? error.message : "unknown error")})`;
                     await closeFile();
+                    if (stopped()) throw error;
+                    bodyReadError = `Reading the temporary upload file failed (${errorCodeOf(error) ?? (error instanceof Error ? error.message : "unknown error")})`;
                     throw new Error(bodyReadError);
                 }
             }
@@ -506,7 +630,10 @@ function progressStream(parts: BodyPart[], signal: AbortSignal): ReadableStream<
             uploadProgress = { loaded, total };
             touch();
         },
-        cancel: closeFile
+        cancel() {
+            cancelled = true;
+            return closeFile();
+        }
     });
 }
 
@@ -571,7 +698,7 @@ const MAX_RESPONSE_BYTES = 1024 * 1024;
 
 const MAX_RESPONSE_HEADERS = 200;
 
-async function readResponseText(response: Response): Promise<{ text: string; truncated: boolean; }> {
+async function readResponseText(response: Response, { max = MAX_RESPONSE_BYTES, progress = touch, tolerateErrors = false } = {}): Promise<{ text: string; truncated: boolean; }> {
     const reader = response.body?.getReader();
     if (!reader) return { text: "", truncated: false };
     const decoder = new TextDecoder();
@@ -581,9 +708,9 @@ async function readResponseText(response: Response): Promise<{ text: string; tru
         while (true) {
             const { done, value } = await reader.read();
             if (done) return { text: text + decoder.decode(), truncated: false };
-            touch();
+            progress();
             if (!value?.length) continue;
-            const room = MAX_RESPONSE_BYTES - received;
+            const room = max - received;
             if (value.length > room) {
                 text += decoder.decode(value.subarray(0, room));
                 await reader.cancel().catch(() => { });
@@ -592,7 +719,11 @@ async function readResponseText(response: Response): Promise<{ text: string; tru
             received += value.length;
             text += decoder.decode(value, { stream: true });
         }
+    } catch (error) {
+        if (!tolerateErrors) throw error;
+        return { text: text + decoder.decode(), truncated: true };
     } finally {
+        await reader.cancel().catch(() => { });
         reader.releaseLock();
     }
 }
@@ -605,7 +736,7 @@ function multipartFetch(url: string, fields: Record<string, string>, fileFieldNa
     const safeContentType = (fileContentType || "application/octet-stream").replace(/[\r\n]/g, "");
     let head = "";
     for (const [name, value] of Object.entries(fields)) {
-        head += `--${boundary}\r\nContent-Disposition: form-data; name="${escapeName(name)}"\r\n\r\n${value.replace(/[\r\n]/g, "")}\r\n`;
+        head += `--${boundary}\r\nContent-Disposition: form-data; name="${escapeName(name)}"\r\n\r\n${value}\r\n`;
     }
     head += `--${boundary}\r\nContent-Disposition: form-data; name="${escapeName(fileFieldName)}"; filename="${safeName}"\r\nContent-Type: ${safeContentType}\r\n\r\n`;
     const parts = [encoder.encode(head), file, encoder.encode(`\r\n--${boundary}--\r\n`)];
@@ -704,6 +835,7 @@ export interface CustomUploadRequestOptions {
 
 export interface CustomUploadResponse {
     success: boolean;
+    busy?: true;
     status?: number;
     statusText?: string;
     contentType?: string;
@@ -737,7 +869,11 @@ function requestBody(e: IpcMainInvokeEvent, body: ArrayBuffer | ArrayBufferView 
     return { path: spool.path, dev: spool.dev, ino: spool.ino, start, length };
 }
 
-export async function customUploadRequest(
+export async function customUploadRequest(...args: Parameters<typeof performCustomUploadRequest>): Promise<CustomUploadResponse> {
+    return withNativeTransfer(args[0], () => performCustomUploadRequest(...args));
+}
+
+async function performCustomUploadRequest(
     e: IpcMainInvokeEvent,
     options: CustomUploadRequestOptions,
     body: ArrayBuffer | SpoolSource
@@ -755,6 +891,7 @@ export async function customUploadRequest(
     } = options;
     const insecureOrigin = typeof options.insecureOrigin === "string" ? options.insecureOrigin : undefined;
     const viaProxy = options.viaProxy === true;
+    if (unapproved(url)) return { success: false, code: "approval", error: APPROVAL_TEXT };
 
     const problem = await uploadUrlProblem(url, insecureOrigin);
     if (problem) return problem.lookupError !== undefined ? lookupFailure(problem.lookupError) : { success: false, code: "local", error: problem.error };
@@ -850,10 +987,11 @@ export interface CleanupRequestOptions {
     insecureOrigin?: string;
 }
 
-export async function cleanupRequest(_: IpcMainInvokeEvent, options: CleanupRequestOptions): Promise<{ success: boolean; status?: number; error?: string; }> {
+export async function cleanupRequest(_: IpcMainInvokeEvent, options: CleanupRequestOptions): Promise<{ success: boolean; status?: number; error?: string; code?: "approval"; }> {
     const { url, method, headers = {}, insecureOrigin } = options ?? {};
     if (typeof url !== "string") return { success: false, error: UPLOAD_URL_RULE };
     if (method !== "DELETE") return { success: false, error: "Only DELETE is supported" };
+    if (unapproved(url)) return { success: false, code: "approval", error: APPROVAL_TEXT };
     const problem = await uploadUrlProblem(url, insecureOrigin);
     if (problem) return { success: false, error: problem.error ?? describeNetworkError(problem.lookupError).error };
     const controller = new AbortController();
@@ -879,22 +1017,23 @@ export interface DeleteRequestOptions {
     publicOnly?: boolean;
 }
 
-export async function deleteRequest(_: IpcMainInvokeEvent, options: DeleteRequestOptions): Promise<{ success: boolean; status?: number; body?: string; error?: string; }> {
+export async function deleteRequest(_: IpcMainInvokeEvent, options: DeleteRequestOptions): Promise<{ success: boolean; status?: number; body?: string; error?: string; code?: "approval"; }> {
     const { url, method, headers = {}, form, publicOnly } = options ?? {};
     if (typeof url !== "string") return { success: false, error: UPLOAD_URL_RULE };
     if (method !== "GET" && method !== "POST" && method !== "DELETE") return { success: false, error: "Only GET, POST and DELETE are supported" };
+    if (publicOnly !== true && unapproved(url)) return { success: false, code: "approval", error: APPROVAL_TEXT };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), CLEANUP_TIMEOUT_MS);
     try {
-        if (publicOnly === true) {
-            const refused = sourceUrlError(url) ?? await sourceAddressProblem(url, controller.signal);
-            if (refused) return { success: false, error: refused };
-        } else {
+        if (publicOnly !== true) {
             const problem = await uploadUrlProblem(url);
             if (problem) return { success: false, error: problem.error ?? describeNetworkError(problem.lookupError).error };
         }
         const body = method === "POST" && form && typeof form === "object" ? new URLSearchParams(form) : undefined;
-        const response = await fetch(url, { method, headers, body, redirect: "manual", signal: controller.signal });
+        const options = { method, headers, body };
+        const opened = publicOnly === true ? await publicSourceResponse(url, controller.signal, options) : null;
+        if (opened && "error" in opened) return { success: false, error: opened.error };
+        const response = opened?.response ?? await fetch(url, { ...options, redirect: "manual", signal: controller.signal });
         return { success: true, status: response.status, body: await readResponseHead(response, MAX_DELETE_ANSWER) };
     } catch (e) {
         return { success: false, error: controller.signal.aborted ? `No answer within ${CLEANUP_TIMEOUT_MS / 1000} s` : describeNetworkError(e).error };
@@ -947,11 +1086,136 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
     return Promise.race([promise, aborted]).finally(() => signal.removeEventListener("abort", onAbort));
 }
 
-async function sourceAddressProblem(url: string, signal: AbortSignal): Promise<string | null> {
-    const host = new URL(url).hostname.replace(/\.$/, "");
-    if (host.startsWith("[") || isIP(host)) return null;
-    const addresses = await abortable(resolveAll(host), signal);
-    return addresses.length && addresses.every(isPublicSourceAddress) ? null : `${host} resolves to a local address`;
+type PublicRequest = { method?: string; headers?: Record<string, string>; body?: URLSearchParams; };
+
+// node:https doesn't refuse fetch's blocked ports, so this copies Node's list.
+const FETCH_BLOCKED_PORTS = new Set([
+    1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95,
+    101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179,
+    389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601,
+    636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000,
+    6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080
+]);
+
+async function publicSourceResponse(url: string, signal: AbortSignal, options: PublicRequest = {}): Promise<{ response: Response; } | { error: string; }> {
+    const problem = sourceUrlError(url);
+    if (problem) return { error: problem };
+    const parsed = new URL(url);
+    if (parsed.username || parsed.password) throw new TypeError("Links with a user name or password can't be downloaded");
+    if (FETCH_BLOCKED_PORTS.has(Number(parsed.port))) return { error: "Refusing to fetch a blocked HTTPS port" };
+    const host = parsed.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "");
+    const addresses = isIP(host) ? [host] : await abortable(resolveAll(host), signal);
+    if (!addresses.length || !addresses.every(isPublicSourceAddress)) return { error: `${host} resolves to a local address` };
+    signal.throwIfAborted();
+    return { response: await pinnedSourceRequest(parsed, addresses, signal, options) };
+}
+
+function pinnedSourceRequest(url: URL, addresses: string[], signal: AbortSignal, options: PublicRequest): Promise<Response> {
+    const headers = new Headers(options.headers);
+    for (const [key, value] of Object.entries({ accept: "*/*", "accept-encoding": "identity", "accept-language": "*", "sec-fetch-mode": "cors", "user-agent": "node" })) {
+        if (!headers.has(key)) headers.set(key, value);
+    }
+    headers.set("host", url.host);
+    const body = options.body?.toString();
+    if (body !== undefined) {
+        if (!headers.has("content-type")) headers.set("content-type", "application/x-www-form-urlencoded;charset=UTF-8");
+        headers.set("content-length", String(new TextEncoder().encode(body).length));
+    }
+    const host = url.hostname.replace(/^\[|\]$/g, "");
+    return new Promise((resolve, reject) => {
+        const connection: RequestOptions & { autoSelectFamily: boolean; } = {
+            method: options.method ?? "GET", headers: Object.fromEntries(headers), signal,
+            agent: false, servername: isIP(host) ? "" : host, rejectUnauthorized: true, autoSelectFamily: true,
+            lookup: (_host, options, callback) => {
+                const matches = addresses.map(address => ({ address, family: isIP(address) }))
+                    .filter(answer => !options.family || options.family === answer.family);
+                if (!matches.length) return callback(Object.assign(new Error("No approved address for this IP family"), { code: "EAI_ADDRFAMILY" }), "");
+                if (options.all) callback(null, matches);
+                else callback(null, matches[0].address, matches[0].family);
+            }
+        };
+        const request = httpsRequest(url, connection, incoming => {
+            const streams: Readable[] = [incoming];
+            let dispose = () => {};
+            try {
+                const headers = new Headers();
+                for (let i = 0; i < incoming.rawHeaders.length; i += 2) headers.append(incoming.rawHeaders[i], incoming.rawHeaders[i + 1]);
+                const status = incoming.statusCode ?? 0;
+                const noBody = options.method === "HEAD" || [204, 205, 304].includes(status);
+                const codings = (headers.get("content-encoding") ?? "").toLowerCase().split(",").map(s => s.trim()).filter(Boolean);
+                const decode = codings.every(c => ["gzip", "x-gzip", "deflate", "br"].includes(c));
+                if (!noBody && decode && codings.length > 4) throw new TypeError("Too many content encodings");
+                incoming.on("error", () => {});
+                dispose = () => {
+                    signal.removeEventListener("abort", dispose);
+                    request.destroy();
+                    for (const stream of streams) stream.destroy();
+                };
+                const chunks = (async function* () {
+                    let source: Readable = incoming;
+                    try {
+                        for (const coding of decode ? codings.reverse() : []) {
+                            const flush = { flush: zlibConstants.Z_SYNC_FLUSH, finishFlush: zlibConstants.Z_SYNC_FLUSH };
+                            let decoder: Transform;
+                            if (coding === "deflate") {
+                                const iterator = source[Symbol.asyncIterator]();
+                                const first = await iterator.next();
+                                const replay = Readable.from((async function* () {
+                                    if (!first.done) yield first.value;
+                                    yield* iterator;
+                                })(), { objectMode: false });
+                                streams.push(replay);
+                                source = replay;
+                                decoder = first.value?.[0] % 16 === 8 ? createInflate(flush) : createInflateRaw(flush);
+                            } else decoder = coding === "br" ? createBrotliDecompress({
+                                flush: zlibConstants.BROTLI_OPERATION_FLUSH, finishFlush: zlibConstants.BROTLI_OPERATION_FLUSH
+                            }) : createGunzip(flush);
+                            streams.push(decoder);
+                            void pipeline(source, decoder, { signal }).catch(() => {});
+                            source = decoder;
+                        }
+                        yield* source;
+                    } finally {
+                        dispose();
+                    }
+                })();
+                const responseBody = noBody ? null : new ReadableStream<Uint8Array>({
+                    async pull(controller) {
+                        try {
+                            signal.throwIfAborted();
+                            const next = await chunks.next();
+                            signal.throwIfAborted();
+                            if (next.done) controller.close();
+                            else controller.enqueue(next.value);
+                        } catch (error) {
+                            dispose();
+                            controller.error(error);
+                        }
+                    },
+                    async cancel() {
+                        dispose();
+                        await chunks.return(undefined);
+                    }
+                }, { highWaterMark: 64 * 1024, size: chunk => chunk.byteLength });
+                const response = new Response(responseBody, { status: status >= 200 && status <= 599 ? status : 502, statusText: (incoming.statusMessage ?? "").replace(/[^\t\x20-\x7e\x80-\xff]+/g, " "), headers });
+                if (response.status !== status) Object.defineProperty(response, "status", { value: status });
+                if (noBody) dispose();
+                else signal.addEventListener("abort", dispose, { once: true });
+                resolve(response);
+            } catch (error) {
+                dispose();
+                incoming.destroy();
+                request.destroy();
+                reject(error);
+            }
+        });
+        request.on("error", reject);
+        request.on("upgrade", (_response, socket) => {
+            socket.destroy();
+            reject(new TypeError("Unexpected protocol upgrade from source"));
+        });
+        request.end(body);
+    });
 }
 
 type SourceRefusal = { error: string; code: NativeErrorCode; policy: true; };
@@ -961,9 +1225,9 @@ const refusal = (error: string, code: NativeErrorCode): SourceRefusal => ({ erro
 async function openSource(url: string, signal: AbortSignal, viaProxy = false): Promise<{ response: Response; } | SourceRefusal | { error: string; code: NativeErrorCode; block?: true; }> {
     let current = url;
     for (let hop = 0; ; hop++) {
-        const local = await sourceAddressProblem(current, signal);
-        if (local) return hop ? refusal(`Refusing a redirect to ${new URL(current).origin} (${local})`, "http") : refusal(`Refusing to fetch a local address (${local})`, "local");
-        const response = await fetch(current, { signal, redirect: "manual" });
+        const opened = await publicSourceResponse(current, signal);
+        if ("error" in opened) return hop ? refusal(`Refusing a redirect to ${new URL(current).origin} (${opened.error})`, "http") : refusal(opened.error, "local");
+        const { response } = opened;
         if (viaProxy && response.status >= 300 && response.status < 400) {
             await response.body?.cancel().catch(() => { });
             return { error: `The CORS proxy answered with a redirect (${response.status}), which isn't followed`, code: "http" };
@@ -987,20 +1251,7 @@ async function openSource(url: string, signal: AbortSignal, viaProxy = false): P
 }
 
 async function readResponseHead(response: Response, max: number): Promise<string> {
-    const reader = response.body?.getReader();
-    if (!reader) return "";
-    const decoder = new TextDecoder();
-    let text = "";
-    try {
-        while (text.length < max) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (value?.length) text += decoder.decode(value, { stream: true });
-        }
-    } catch { } finally {
-        await reader.cancel().catch(() => { });
-    }
-    return text.slice(0, max);
+    return (await readResponseText(response, { max, progress: () => {}, tolerateErrors: true })).text;
 }
 
 function startSourceDownload(timeoutMs: number) {
@@ -1057,145 +1308,140 @@ function sourceFailure(e: unknown, download: ReturnType<typeof startSourceDownlo
     return { success: false, ...described, failure: { stage, code: firstErrorCode(e), stageReliable: true, kind: classifyFetchError(e, stage, true) } };
 }
 
-export async function fetchFile(
+interface SourceSink<T> {
+    write(chunk: Uint8Array): void | Promise<string | void>;
+    finish(contentType: string, size: number): T | Promise<T>;
+    close?(): Promise<void>;
+}
+
+async function downloadSource<T>(url: string, timeoutMs: number, maxBytes: number | undefined, viaProxy: boolean | undefined,
+    cap: number, capText: string, prepare: (declared: number | undefined, limit: number) => SourceSink<T> | Promise<SourceSink<T> | { error: string; }>): Promise<T | SourceFailure> {
+    const refused = sourceUrlError(url);
+    if (refused) return { success: false, code: "local", error: refused, policy: true };
+    const limit = sourceLimit(maxBytes, cap);
+    const tooLarge = (size: number) => tooLargeFailure(size, limit, cap, capText);
+    const download = startSourceDownload(timeoutMs);
+    let responded = false;
+    let sink: SourceSink<T> | undefined;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let body: ReadableStream<Uint8Array> | null = null;
+    try {
+        const opened = await openSource(url, download.controller.signal, viaProxy === true);
+        if ("error" in opened) return { success: false, ...opened };
+        const { response } = opened;
+        body = response.body;
+        responded = true;
+        const declared = declaredLength(response);
+        if (declared !== undefined && declared > limit) return tooLarge(declared);
+        const prepared = await prepare(declared, limit);
+        if ("error" in prepared) {
+            return { success: false, code: "local", error: prepared.error };
+        }
+        sink = prepared;
+        reader = response.body?.getReader();
+        let received = 0;
+        download.progress(0, declared);
+        while (reader) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            download.resetStall();
+            if (!value?.length) continue;
+            if (value.length > limit - received) return tooLarge(received + value.length);
+            const error = await sink.write(value);
+            if (error) return { success: false, code: "local", error };
+            received += value.length;
+            download.progress(received, declared);
+        }
+        if (download.controller.signal.aborted) throw download.controller.signal.reason;
+        return await sink.finish(response.headers.get("content-type") || "", received);
+    } catch (e) {
+        return sourceFailure(e, download, responded);
+    } finally {
+        download.end();
+        if (reader) {
+            await reader.cancel().catch(() => {});
+            reader.releaseLock();
+        } else await body?.cancel().catch(() => {});
+        await sink?.close?.();
+    }
+}
+
+export async function fetchFile(...args: Parameters<typeof performFetchFile>) {
+    return withNativeTransfer(args[0], () => performFetchFile(...args));
+}
+
+async function performFetchFile(
     _: IpcMainInvokeEvent,
     url: string,
     timeoutMs: number = 300000,
     maxBytes?: number,
     viaProxy?: boolean
 ): Promise<{ success: boolean; contentType?: string; error?: string; code?: NativeErrorCode; cancelled?: true; tooLarge?: true; size?: number; policy?: true; failure?: UploadFailure; block?: true; data?: ArrayBuffer; }> {
-    const refused = sourceUrlError(url);
-    if (refused) return { success: false, code: "local", error: refused, policy: true };
-
-    const limit = sourceLimit(maxBytes, NATIVE_MAX_BUFFER);
-    const tooLarge = (size: number) => tooLargeFailure(size, limit, NATIVE_MAX_BUFFER, "Files over 1.9 GB can't be uploaded from the desktop app yet (fully restart Discord or Vesktop to finish updating BigFileUpload)");
-    const download = startSourceDownload(timeoutMs);
-    let responded = false;
-    try {
-        const opened = await openSource(url, download.controller.signal, viaProxy === true);
-        if ("error" in opened) return { success: false, ...opened };
-        const { response } = opened;
-        responded = true;
-        const contentType = response.headers.get("content-type") || "";
-        const declared = declaredLength(response);
-        if (declared !== undefined && declared > limit) {
-            await response.body?.cancel().catch(() => { });
-            return tooLarge(declared);
-        }
-        download.progress(0, declared);
-
-        if (!response.body) {
-            const data = await response.arrayBuffer();
-            return { success: true, contentType, data };
-        }
-
-        const reader = response.body.getReader();
-        const chunks: Uint8Array[] = [];
-        let received = 0;
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            download.resetStall();
-            if (value) {
-                if (received + value.length > limit) {
-                    await reader.cancel().catch(() => { });
-                    return tooLarge(received + value.length);
+    const chunks: Uint8Array[] = [];
+    return downloadSource(url, timeoutMs, maxBytes, viaProxy, NATIVE_MAX_BUFFER,
+        "Files over 1.9 GB can't be uploaded from the desktop app yet (fully restart Discord or Vesktop to finish updating BigFileUpload)", () => ({
+            write: chunk => { chunks.push(chunk); },
+            finish(contentType, size) {
+                const data = new Uint8Array(size);
+                let offset = 0;
+                for (const chunk of chunks) {
+                    data.set(chunk, offset);
+                    offset += chunk.length;
                 }
-                chunks.push(value);
-                received += value.length;
-                download.progress(received, declared);
+                return { success: true, contentType, data: data.buffer as ArrayBuffer };
             }
-        }
-
-        const data = new Uint8Array(received);
-        let offset = 0;
-        for (const chunk of chunks) {
-            data.set(chunk, offset);
-            offset += chunk.length;
-        }
-        return { success: true, contentType, data: data.buffer as ArrayBuffer };
-    } catch (e) {
-        return sourceFailure(e, download, responded);
-    } finally {
-        download.end();
-    }
+        }));
 }
 
 export type FetchToSpoolResult =
     | { success: true; id: string; size: number; contentType: string; sha256: string; head: ArrayBuffer; }
     | SourceFailure;
 
-export async function fetchToSpool(e: IpcMainInvokeEvent, url: string, timeoutMs = 300000, session = "", maxBytes?: number, viaProxy?: boolean): Promise<FetchToSpoolResult> {
-    const refused = sourceUrlError(url);
-    if (refused) return { success: false, code: "local", error: refused, policy: true };
+export async function fetchToSpool(...args: Parameters<typeof performFetchToSpool>): Promise<FetchToSpoolResult | NativeBusy> {
+    return withNativeTransfer(args[0], () => performFetchToSpool(...args));
+}
 
-    const limit = sourceLimit(maxBytes, SPOOL_MAX_BYTES);
-    const tooLarge = (size: number) => tooLargeFailure(size, limit, SPOOL_MAX_BYTES, `Files over ${gigabytes(SPOOL_MAX_BYTES)} can't be uploaded from the desktop app`);
-    const download = startSourceDownload(timeoutMs);
-    let id: string | undefined;
-    let responded = false;
-    try {
-        const opened = await openSource(url, download.controller.signal, viaProxy === true);
-        if ("error" in opened) return { success: false, ...opened };
-        const { response } = opened;
-        responded = true;
-        const contentType = response.headers.get("content-type") || "";
-
-        const declared = declaredLength(response);
-        if (declared !== undefined && declared > limit) {
-            await response.body?.cancel().catch(() => { });
-            return tooLarge(declared);
-        }
-        const created = await createSpool(e, declared || undefined, String(session), limit);
-        if ("error" in created) {
-            await response.body?.cancel().catch(() => { });
-            return { success: false, code: "local", error: created.error };
-        }
-        ({ id } = created);
-        const { spool } = created;
-        download.progress(0, declared);
-
-        const head = new Uint8Array(SPOOL_HEAD_BYTES);
-        let headLength = 0;
-        let roomFor = declared ? Infinity : 0;
-        const reader = response.body?.getReader();
-        while (reader) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            download.resetStall();
-            if (!value?.length) continue;
-            if (value.length > spool.limit - spool.written) {
-                await reader.cancel().catch(() => { });
-                return tooLarge(spool.written + value.length);
-            }
-            if (spool.written + value.length > roomFor) {
-                roomFor = Math.min(spool.limit, spool.written + value.length + ROOM_CHECK_BYTES);
-                if (!await hasRoomFor(spoolDir(), roomFor - spool.written)) {
-                    await reader.cancel().catch(() => { });
-                    return { success: false, code: "local", error: "Not enough free disk space to prepare the upload" };
-                }
-            }
-            if (headLength < head.length) {
-                const n = Math.min(head.length - headLength, value.length);
-                head.set(value.subarray(0, n), headLength);
-                headLength += n;
-            }
+async function performFetchToSpool(e: IpcMainInvokeEvent, url: string, timeoutMs = 300000, session = "", maxBytes?: number, viaProxy?: boolean): Promise<FetchToSpoolResult> {
+    return downloadSource<FetchToSpoolResult>(url, timeoutMs, maxBytes, viaProxy, SPOOL_MAX_BYTES,
+        `Files over ${gigabytes(SPOOL_MAX_BYTES)} can't be uploaded from the desktop app`, async (declared, limit) => {
+            const created = await createSpool(e, declared || undefined, String(session), limit);
+            if ("error" in created) return created;
+            const { id, spool } = created;
+            let head: Uint8Array;
             try {
-                await appendToSpool(spool, value);
+                head = new Uint8Array(SPOOL_HEAD_BYTES);
             } catch (error) {
-                void reader.cancel().catch(() => { });
-                return { success: false, code: "local", error: `Writing the temporary upload file failed (${errorCodeOf(error) ?? (error instanceof Error ? error.message : "unknown error")})` };
+                await releaseSpool(id);
+                throw error;
             }
-            download.progress(spool.written, declared);
-        }
-        const sha256 = await completeSpool(spool);
-        const result: FetchToSpoolResult = { success: true, id, size: spool.written, contentType, sha256, head: head.slice(0, headLength).buffer };
-        id = undefined;
-        return result;
-    } catch (e) {
-        return sourceFailure(e, download, responded);
-    } finally {
-        download.end();
-        if (id) await releaseSpool(id);
-    }
+            let headLength = 0, roomFor = declared ? Infinity : 0;
+            let retained = false;
+            return {
+                async write(chunk) {
+                    if (spool.written + chunk.length > roomFor) {
+                        roomFor = Math.min(spool.limit, spool.written + chunk.length + ROOM_CHECK_BYTES);
+                        if (!await hasRoomFor(spoolDir(), roomFor - spool.written)) return "Not enough free disk space to prepare the upload";
+                    }
+                    if (headLength < head.length) {
+                        const n = Math.min(head.length - headLength, chunk.length);
+                        head.set(chunk.subarray(0, n), headLength);
+                        headLength += n;
+                    }
+                    try {
+                        await appendToSpool(spool, chunk);
+                    } catch (error) {
+                        return `Writing the temporary upload file failed (${errorCodeOf(error) ?? (error instanceof Error ? error.message : "unknown error")})`;
+                    }
+                },
+                async finish(contentType, size) {
+                    const sha256 = await completeSpool(spool);
+                    const result = { success: true as const, id, size, contentType, sha256, head: head.slice(0, headLength).buffer };
+                    retained = true;
+                    return result;
+                },
+                async close() {
+                    if (!retained) await releaseSpool(id);
+                }
+            };
+        });
 }

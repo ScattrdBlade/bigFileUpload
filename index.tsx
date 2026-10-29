@@ -21,7 +21,7 @@ import { ChannelStore, DraftType, EditMessageStore, FluxDispatcher, Menu, Permis
 import { migrateSettings, settings } from "./settings";
 import { listNames, serviceLabel, ServiceType } from "./types";
 import { askToUseHost, copyKeptLink, initCorsProxyPrompt, openPluginSettings, startCorsProxyPrompt } from "./utils/dialogs";
-import { getMediaUrls } from "./utils/media";
+import { getMediaUrls, mediaUnavailableReason } from "./utils/media";
 import { loadHttpOrigins } from "./utils/proxy";
 import { canAnyHostAccept, cancelAllUploads, cancelCurrentUpload, dismissUploadState, formatSize, getUploadState, hasNativeHelper, isFileTypeAllowed, isPrimaryReady, logger, noHostText, offerHost, primaryNotReadyReason, primaryNotReadyText, removeQueuedUpload, subscribeUploadState, uploadBlocker, uploadFile, uploadPickedFile, uploadProvidedFiles, UploadTarget } from "./utils/upload";
 
@@ -46,12 +46,18 @@ function markHit(name: keyof typeof patchHits, replace: string) {
 
 let uploadAddFilesInterceptor: ((event: unknown) => void) | null = null;
 
-let declinedBatch: { channelId: string; count: number; at: number; } | null = null;
+let declinedBatch: { channelId: string; draftType: number; origin: string; files: readonly File[]; at: number; } | null = null;
 
 const DECLINED_BATCH_WINDOW_MS = 10000;
 
-function isDeclinedBatch(channelId: string | undefined, count: number, consume: boolean): boolean {
-    if (!declinedBatch || declinedBatch.channelId !== channelId || declinedBatch.count !== count || Date.now() - declinedBatch.at > DECLINED_BATCH_WINDOW_MS) return false;
+function isDeclinedBatch(channelId: string | undefined, draftType: unknown, origin: unknown, files: readonly File[], consume: boolean): boolean {
+    if (!declinedBatch) return false;
+    if (Date.now() - declinedBatch.at > DECLINED_BATCH_WINDOW_MS) {
+        declinedBatch = null;
+        return false;
+    }
+    if (declinedBatch.channelId !== channelId || declinedBatch.draftType !== draftType || declinedBatch.origin !== origin
+        || declinedBatch.files.length !== files.length || !files.every(file => declinedBatch!.files.includes(file))) return false;
     if (consume) declinedBatch = null;
     return true;
 }
@@ -176,51 +182,32 @@ const DISCORD_MIN_FILE_SIZE = 20 * 1024 * 1024;
 
 const DISCORD_FALLBACK_TOTAL_SIZE = 500 * 1024 * 1024;
 
-function readDiscordUploadLimit(guildId: string | null): { limit: number; source: "o2" | "getUserMaxFileSize" | "constant"; } {
-    const readers = [
-        ["o2", () => discordGuildMaxFileSize(guildId)],
-        ["getUserMaxFileSize", () => getUserMaxFileSize(UserStore.getCurrentUser())]
-    ] as const;
-    for (const [source, read] of readers) {
+function readDiscordUploadLimit(guildId: string | null): number {
+    for (const read of [() => discordGuildMaxFileSize(guildId), () => getUserMaxFileSize(UserStore.getCurrentUser())]) {
         try {
             const limit = Number(read());
-            if (Number.isFinite(limit) && limit > 0) return { limit: Math.max(DISCORD_MIN_FILE_SIZE, limit), source };
+            if (Number.isFinite(limit) && limit > 0) return Math.max(DISCORD_MIN_FILE_SIZE, limit);
         } catch { }
     }
-    return { limit: DISCORD_MIN_FILE_SIZE, source: "constant" };
+    return DISCORD_MIN_FILE_SIZE;
 }
 
-const toMiB = (bytes: number) => Math.round(bytes / 1048576 * 10) / 10;
-
 function filesExceedDiscordLimit(files: readonly File[], guildId: string | null): boolean {
-    const { limit, source } = readDiscordUploadLimit(guildId);
-    const total = files.reduce((sum, file) => sum + file.size, 0);
-    const summary = `${files.length} files, ${toMiB(total)} MiB, per-file limit ${toMiB(limit)} MiB from ${source}`;
     try {
         const result: unknown = discordFilesExceedLimit({ files, guildId, canDeferSizeChecks: false });
-        if (typeof result === "boolean") {
-            logger.debug(`Limit check by fJ: ${result ? "over" : "within"} (${summary})`);
-            return result;
-        }
+        if (typeof result === "boolean") return result;
         logger.warn("Discord file size check returned a non-boolean, using the manual size check instead", result);
     } catch (error) {
         logger.warn("Discord file size check unavailable, falling back to a manual size check", error);
     }
 
-    if (files.some(file => file.size > limit)) {
-        logger.debug(`Limit check by ${source}: over (${summary})`);
-        return true;
-    }
+    const limit = readDiscordUploadLimit(guildId);
+    if (files.some(file => file.size > limit)) return true;
     try {
         const tooLarge: unknown = discordUploadSumTooLarge(files);
-        if (typeof tooLarge === "boolean") {
-            logger.debug(`Limit check by Aw: ${tooLarge ? "over" : "within"} (${summary})`);
-            return tooLarge;
-        }
+        if (typeof tooLarge === "boolean") return tooLarge;
     } catch { }
-    const over = total > DISCORD_FALLBACK_TOTAL_SIZE;
-    logger.debug(`Limit check by the ${toMiB(DISCORD_FALLBACK_TOTAL_SIZE)} MiB fallback total: ${over ? "over" : "within"} (${summary})`);
-    return over;
+    return files.reduce((sum, file) => sum + file.size, 0) > DISCORD_FALLBACK_TOTAL_SIZE;
 }
 
 function manualLimitBytes(): number {
@@ -331,7 +318,7 @@ function decideGateBypass({ files, guildId, channel, draftType, origin, isThumbn
     if (!pluginActive || isThumbnail || !isOriginEnabled(origin) || !interceptorHealthy) return false;
     if (!Array.isArray(files) || !files.length || !channel || draftType == null) return false;
     if (draftType !== DraftType.ChannelMessage && draftType !== DraftType.FirstThreadMessage) return false;
-    if (isDeclinedBatch(channel.id, files.length, false)) return false;
+    if (isDeclinedBatch(channel.id, draftType, origin, files, false)) return false;
 
     const gid = guildId ?? channel.guild_id ?? null;
     if (!filesExceedDiscordLimit(files, gid)) return false;
@@ -427,7 +414,7 @@ function interceptUploadAddFiles(event: unknown): void {
         }
 
         const entries = Array.isArray(payload.files) ? payload.files : [];
-        if (isDeclinedBatch(payload.channelId, entries.length, true)) return;
+        if (isDeclinedBatch(payload.channelId, payload.draftType, entryField(entries[0], "origin"), dispatched, true)) return;
         if (!isOriginEnabled(entryField(entries[0], "origin"))) return;
         if (!isPrimaryReady()) {
             if (payload.draftType === DraftType.ChannelMessage || payload.draftType === DraftType.FirstThreadMessage) {
@@ -490,7 +477,7 @@ function handleIncomingFiles(list: ArrayLike<File>, channel: Channel, draftType:
     try {
         const files = Array.from(list);
         const decision = decideIncomingFiles(files, channel, draftType, origin);
-        if (decision === "decline") declinedBatch = { channelId: channel.id, count: files.length, at: Date.now() };
+        if (decision === "decline") declinedBatch = { channelId: channel.id, draftType, origin, files, at: Date.now() };
         if (decision !== "take") return false;
         void uploadProvidedFiles(files, { channelId: channel.id, draftType, automatic: true, ...typeof composer === "string" && { composer } });
         return true;
@@ -675,65 +662,31 @@ const ProgressBarInner = ({ channelId, draftType, composer }: { channelId: strin
 
 const ProgressBar = ErrorBoundary.wrap(ProgressBarInner, { noop: true });
 
-const messageContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {
+const mediaContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {
     if (!props) return;
-
-    const { itemSrc, itemHref, target } = props;
-    const media = getMediaUrls({ src: itemSrc, href: itemHref, target });
-
-    if (!media) return;
-
-    const group = findGroupChildrenByChildId("open-native-link", children)
-        ?? findGroupChildrenByChildId("copy-link", children);
-
-    if (group && !group.some(child => child?.props?.id === "file-upload")) {
-        const serviceType = settings.store.serviceType as ServiceType;
-        const serviceName = serviceLabel(serviceType);
-
-        group.push(
-            <Menu.MenuItem
-                label={`Upload to ${serviceName}`}
-                key="file-upload"
-                id="file-upload"
-                iconLeft={CloudUploadIcon}
-                leadingAccessory={{
-                    type: "icon",
-                    icon: CloudUploadIcon
-                }}
-                action={() => uploadFile(media.url, undefined, media.discordProxyUrl)}
-            />
-        );
-    }
-};
-
-const imageContextMenuPatch: NavContextMenuPatchCallback = (children, props) => {
-    if (!props) return;
-
-    if ("href" in props && !props.src) return;
 
     const media = getMediaUrls(props);
-    if (!media) return;
-
-    if (children.some(child => child?.props?.id === "file-upload-group")) return;
+    const unavailable = media ? null : mediaUnavailableReason(props);
+    if ((!media && !unavailable) || findGroupChildrenByChildId("file-upload", children)) return;
 
     const serviceType = settings.store.serviceType as ServiceType;
     const serviceName = serviceLabel(serviceType);
-
-    children.push(
-        <Menu.MenuGroup id="file-upload-group">
-            <Menu.MenuItem
-                label={`Upload to ${serviceName}`}
-                key="file-upload"
-                id="file-upload"
-                iconLeft={CloudUploadIcon}
-                leadingAccessory={{
-                    type: "icon",
-                    icon: CloudUploadIcon
-                }}
-                action={() => uploadFile(media.url, undefined, media.discordProxyUrl)}
-            />
-        </Menu.MenuGroup>
+    const item = (
+        <Menu.MenuItem
+            label={`Upload to ${serviceName}`}
+            key="file-upload"
+            id="file-upload"
+            iconLeft={CloudUploadIcon}
+            leadingAccessory={{
+                type: "icon",
+                icon: CloudUploadIcon
+            }}
+            action={() => media ? uploadFile(media.url, undefined, media.discordProxyUrl) : showToast({ text: unavailable!, duration: 10000 })}
+        />
     );
+    const group = findGroupChildrenByChildId(["open-native-link", "copy-link", "copy-native-link", "media-viewer-copy-link", "media-viewer-copy-image", "copy-image-link"], children);
+    if (group) group.push(item);
+    else children.push(<Menu.MenuGroup id="file-upload-group">{item}</Menu.MenuGroup>);
 };
 
 async function handleUploadFileFromDraft(upload: CloudUpload, channelId: string, draftType: number, composer?: string) {
@@ -765,9 +718,11 @@ async function handleUploadFileFromDraft(upload: CloudUpload, channelId: string,
 const ExternalIcon = () => <OpenExternalIcon height={24} width={24} />;
 
 const channelAttachMenuPatch: NavContextMenuPatchCallback = (children, props) => {
+    if (settings.store.bypassDiscordUpload) return;
+
     const channel = props?.channel;
     if (!channel) return;
-    if (channel.guild_id && !PermissionStore.can(PermissionsBits.SEND_MESSAGES, channel)) return;
+    if (channel.guild_id && !PermissionStore.can(channel.isThread?.() ? PermissionsBits.SEND_MESSAGES_IN_THREADS : PermissionsBits.SEND_MESSAGES, channel)) return;
     if (children.some(child => child?.props?.id === "file-upload-manual" || child?.props?.id === "file-upload-uploads")) return;
 
     const draftType: number = props?.draftType ?? DraftType.ChannelMessage;
@@ -776,18 +731,18 @@ const channelAttachMenuPatch: NavContextMenuPatchCallback = (children, props) =>
     const uploads = UploadAttachmentStore.getUploads(channel.id, draftType);
     const draftUploads = Array.isArray(uploads) ? uploads.filter((u: CloudUpload) => u.item?.file && isFileTypeAllowed(u.item.file)) : [];
 
-    if (draftUploads.length > 0) {
-        children.splice(1, 0,
-            <Menu.MenuItem
-                id="file-upload-uploads"
-                key="file-upload-uploads"
-                label="Upload to Host"
-                iconLeft={ExternalIcon}
-                leadingAccessory={{
-                    type: "icon",
-                    icon: ExternalIcon
-                }}
-            >
+    const hasDrafts = draftUploads.length > 0;
+    const id = hasDrafts ? "file-upload-uploads" : "file-upload-manual";
+    children.splice(1, 0,
+        <Menu.MenuItem
+            id={id}
+            key={id}
+            label="Upload to Host"
+            iconLeft={ExternalIcon}
+            leadingAccessory={{ type: "icon", icon: ExternalIcon }}
+            action={hasDrafts ? undefined : () => uploadPickedFile({ channelId: channel.id, draftType, composer })}
+        >
+            {hasDrafts && <>
                 {draftUploads.map((upload: CloudUpload) => (
                     <Menu.MenuItem
                         id={`file-upload-draft-${upload.id}`}
@@ -803,23 +758,9 @@ const channelAttachMenuPatch: NavContextMenuPatchCallback = (children, props) =>
                     label="Choose File..."
                     action={() => uploadPickedFile({ channelId: channel.id, draftType, composer })}
                 />
-            </Menu.MenuItem>
-        );
-    } else {
-        children.splice(1, 0,
-            <Menu.MenuItem
-                id="file-upload-manual"
-                key="file-upload-manual"
-                label="Upload to Host"
-                iconLeft={ExternalIcon}
-                leadingAccessory={{
-                    type: "icon",
-                    icon: ExternalIcon
-                }}
-                action={() => uploadPickedFile({ channelId: channel.id, draftType, composer })}
-            />
-        );
-    }
+            </>}
+        </Menu.MenuItem>
+    );
 };
 
 function safely(what: string, run: () => void): void {
@@ -840,6 +781,13 @@ export default definePlugin({
     settings,
     patches: [
         {
+            find: "#{intl::MESSAGE_ACTIONS_MENU_LABEL}),shouldHideMediaOptions:",
+            replacement: {
+                match: /favoriteableType:\i,(?<=(\i)\.getAttribute\("data-type"\).+?)/,
+                replace: "$&target:$1,"
+            }
+        },
+        {
             find: ".CREATE_FORUM_POST||",
             replacement: {
                 match: /(?<=type:(\i),targetRef:\i,editorRef:\i,.{0,300}?textValue:\i,editorHeight:\i,channelId:(\i)\.id\}\))/,
@@ -849,7 +797,7 @@ export default definePlugin({
         {
             find: "Unexpected mismatch between files and file metadata",
             replacement: {
-                match: /(async function \i\(\i,(\i),(\i)\)\{let\{(?=(?:[^}]*?isThumbnail:(\i))?)(?=(?:[^}]*?origin:(\i))?)[^}]*?requireConfirm:(\i)=!0.{0,1500}?if\()(?=\(0,\i\.\i\)\(\{files:(\i),guildId:(\i)[^}]*\}\)\)return void \i\(\i,\i\))/,
+                match: /(async function(?: \i)?\(\i,(\i),(\i)\)\{let\{(?=(?:[^}]*?isThumbnail:(\i))?)(?=(?:[^}]*?origin:(\i))?)[^}]*?requireConfirm:(\i)=!0.{0,1500}?if\()(?=\(0,\i\.\i\)\(\{files:(\i),guildId:(\i)[^}]*\}\)\)return void \i\(\i,\i\))/,
                 replace: (_, head: string, channel: string, draftType: string, isThumbnail: string | undefined, origin: string | undefined, requireConfirm: string, files: string, guildId: string) => {
                     patchHits.gate = true;
                     return `${head}!(${requireConfirm}&&$self.shouldBypassDiscordUploadSizeCheck({files:${files},guildId:${guildId},channel:${channel},draftType:${draftType},origin:${origin ?? "void 0"},isThumbnail:${isThumbnail ?? "!1"}}))&&`;
@@ -872,8 +820,10 @@ export default definePlugin({
         },
     ],
     contextMenus: {
-        "message": messageContextMenuPatch,
-        "image-context": imageContextMenuPatch,
+        "message": mediaContextMenuPatch,
+        "image-context": mediaContextMenuPatch,
+        "image-menu": mediaContextMenuPatch,
+        "guild-event-image-context": mediaContextMenuPatch,
         "channel-attach": channelAttachMenuPatch
     },
     start() {

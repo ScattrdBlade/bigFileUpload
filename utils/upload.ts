@@ -12,12 +12,12 @@ import { chooseFile } from "@utils/web";
 import { ChannelSectionStore, ChannelStore, DraftType, MessageActions, PermissionsBits, PermissionStore, SelectedChannelStore, showToast, UserStore } from "@webpack/common";
 
 import { ensureMigrated, getStripQueryMode, settings, withDeclaredDefaults } from "../settings";
-import { bodySize, buildShareXHeaders, credentialProblems, CredentialValues, DEFAULT_ACTIVE_FALLBACKS, describeProxy, directWebHostNames, fallbackServiceOrder, fallsBackToPublic, fileTypePasses, findProxyPreset, hasConfiguredCredential, isGenericWebdav, isPrivateFallbackTarget, isProxiedThrough, isWorkersProxy, listNames, logger, normalizeActiveFallbacks, parseEncryptingHostDomains, parseFileTypeFilter, parseShareXConfig, PIXELDRAIN_KEY_REQUIRED, proxyBodyLimit, proxyKey, resolveShareXRequestValue, resolveShareXTemplate, serviceLabel, SERVICES, ServiceType, ShareXUploaderConfig, TMPFILES_KEPT, toProxiedUrl, TRACKING_QUERY_KEYS, validateShareXConfig, ZEROX0_KEPT } from "../types";
-import { announceLateCancel, askOriginRetry, askTakeover, askToUseHost, LateCancelEntry, LateCancelError, notifyBlockedHost, notifyTakeover, openPluginSettings, UploadCancelledError } from "./dialogs";
+import { bodySize, buildShareXHeaders, credentialProblems, CredentialValues, DEFAULT_ACTIVE_FALLBACKS, describeProxy, directWebHostNames, fallbackServiceOrder, fallsBackToPublic, fileTypePasses, findProxyPreset, hasConfiguredCredential, isGenericWebdav, isPrivateFallbackTarget, isProxiedThrough, isWorkersProxy, listNames, logger, normalizeActiveFallbacks, parseEncryptingHostDomains, parseFileTypeFilter, parseShareXConfig, PIXELDRAIN_KEY_REQUIRED, previewShareXRequestValue, proxyBodyLimit, proxyKey, resolveShareXRequestValue, resolveShareXTemplate, serviceLabel, SERVICES, ServiceType, ShareXUploaderConfig, TMPFILES_KEPT, toProxiedUrl, TRACKING_QUERY_KEYS, validateShareXConfig, ZEROX0_KEPT } from "../types";
+import { announceKeptUpload, announceLateCancel, announceSendFailure, askOriginRetry, askTakeover, askToUseHost, LateCancelEntry, LateCancelError, notifyBlockedHost, notifyTakeover, openPluginSettings, UploadCancelledError } from "./dialogs";
 import { ByteSource, convertApngToGif, getExtensionFromBytes, getExtensionFromMime, getMimeFromExtension, getUrlExtension, isOggVideo } from "./media";
 import { addHistoryEntry, cleanHostText, Deletion, describeBody, describeHttpFailure, HistoryEntry, isDeleting, loadUploadHistory, newHistoryId, redactText, rememberSessionSecret, removeHistoryEntry, setDeleteActions, setDeleting, setDeviceSecret } from "./privacy";
-import { addAlwaysOrigin, alwaysRetryAllowed, checkRoutingSettings, consentPending, dropProxyFirst, EmbedContext, embedTarget, EmbedWait, getActiveCorsProxyUrl, hasUploadedToHttpOrigin, isHostDown, isInsecureHttpAllowed, isLanOrigin, loadProxyOrigins, markHostDown, markProxyFirst, needsOriginConfirmation, noticeProxyChange, notifyHttpPrefs, onAlwaysOriginsForgotten, peekDeviceProxyAnswer, predictEmbedTarget, primeDeviceState, probeEmbedTarget, proxyAllowedHere, proxyConsentGiven, proxyFirstEntry, proxyOffReason, proxyRedirectsSafe, readCapped, readVideoDims, rememberHttpOrigin, rememberLanOrigin, routingSnapshot, VideoDims, whenPromptIdle, wrapForEmbed } from "./proxy";
-import { bytesToHex, failedBeforeSending, hasSecretQuery, httpHostKind, httpLanOnlyText, isDnsCode, isPrivateAddress, isProxyReachableHost, isSpooled, isSpoolPart, NATIVE_MAX_BUFFER, PROXY_RETRY_KINDS, proxyCouldNotReach, proxySourceAllowed, randomHexBytes, RequestBody, RESPONSE_GRACE_MS, SPOOL_MAX_BYTES, SPOOL_MIN_BYTES, SPOOL_SLICE_BYTES, SpooledFile, SpoolPart, SpoolSource, UploadBody, UploadFailure } from "./shared";
+import { addAlwaysOrigin, alwaysRetryAllowed, checkRoutingSettings, consentPending, dropProxyFirst, EmbedContext, embedTarget, EmbedWait, getActiveCorsProxyUrl, hasUploadedToHttpOrigin, isHostDown, isInsecureHttpAllowed, isLanOrigin, isVideoLink, loadProxyOrigins, markHostDown, markProxyFirst, needsOriginConfirmation, noticeProxyChange, notifyHttpPrefs, onAlwaysOriginsForgotten, peekDeviceProxyAnswer, predictEmbedTarget, primeDeviceState, probeEmbedTarget, proxyAllowedHere, proxyConsentGiven, proxyFirstEntry, proxyOffReason, proxyRedirectsSafe, readCapped, readVideoDims, rememberHttpOrigin, rememberLanOrigin, routingSnapshot, VideoDims, whenPromptIdle, wrapForEmbed } from "./proxy";
+import { bytesToHex, failedBeforeSending, hasSecretQuery, httpHostKind, httpLanOnlyText, isBuiltInOrigin, isDnsCode, isPrivateAddress, isProxyReachableHost, isSpooled, isSpoolPart, NATIVE_MAX_BUFFER, PROXY_RETRY_KINDS, proxyCouldNotReach, proxySourceAllowed, randomHexBytes, RequestBody, RESPONSE_GRACE_MS, SPOOL_MAX_BYTES, SPOOL_MIN_BYTES, SPOOL_SLICE_BYTES, SpooledFile, SpoolPart, SpoolSource, UploadBody, UploadFailure } from "./shared";
 
 const KEY = "BigFileUpload_gofileGuestToken";
 
@@ -94,16 +94,12 @@ export async function resetGofileGuestToken(): Promise<void> {
     if (asToken(settings.plain?.gofileGuestToken)) settings.store.gofileGuestToken = "";
 }
 
-
-
 type UploadRequestResponse = {
     ok: boolean;
     status: number;
     headers: Headers;
     text(): Promise<string>;
 };
-
-
 
 export type S3RequestOptions = {
     method: string;
@@ -113,8 +109,6 @@ export type S3RequestOptions = {
     idempotent?: boolean;
     proxyRetry?: "deny";
 };
-
-
 
 export interface S3Transport {
     request(url: string, options: S3RequestOptions, body: RequestBody | null): Promise<UploadRequestResponse>;
@@ -127,6 +121,7 @@ export interface S3Transport {
     payloadSha256(body: UploadBody): Promise<string>;
     hashReadsWhole(body: UploadBody): Promise<boolean>;
     prepare(body: UploadBody): Promise<void>;
+    approve(url: string): Promise<void>;
     part(body: UploadBody, offset: number, length: number, hashed: boolean): Promise<{ body: RequestBody; sha256?: string; }>;
     abort(url: string, headers: Record<string, string>): Promise<number>;
     retry(error: unknown, options?: RetryOptions): Promise<boolean>;
@@ -136,22 +131,16 @@ export interface S3Transport {
     uploaded?(object: S3Object): void;
 }
 
-
-
 export interface S3Object {
     url: string;
     endpoint: string;
     bucket: string;
 }
 
-
-
 export interface RetryOptions {
     transient?: boolean;
     resend?: boolean;
 }
-
-
 
 export interface MultipartState {
     done: number;
@@ -162,53 +151,33 @@ export interface MultipartState {
     last?: boolean;
 }
 
-
-
 export const S3_MAX_PUT_BYTES = 5 * 1024 ** 3;
-
 
 const S3_MIN_PART_BYTES = 5 * 1024 ** 2;
 
-
 const S3_PART_BYTES = 64 * 1024 ** 2;
-
 
 const S3_MAX_PARTS = 10_000;
 
-
 const S3_MAX_OBJECT_BYTES = 5 * 1024 ** 4;
-
-
 
 export const MULTIPART_ETAG_TEXT = "Your bucket's CORS rules (or your proxy) must expose the ETag header for multipart uploads (ExposeHeaders: ETag)";
 
-
-
 const UNSIGNED_PAYLOAD = "UNSIGNED-PAYLOAD";
-
 
 const HASHED_RESEND_MAX = 256 * 1024 * 1024;
 
-
 const textEncoder = new TextEncoder();
-
-
 
 function toArrayBuffer(data: ArrayBuffer | string): ArrayBuffer {
     return typeof data === "string" ? textEncoder.encode(data).buffer as ArrayBuffer : data;
 }
 
-
-
 function encodeRfc3986(value: string): string {
     return encodeURIComponent(value).replace(/[!'()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
-
-
 const byByteOrder = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
-
-
 
 function decodeSegment(segment: string): string {
     try {
@@ -217,8 +186,6 @@ function decodeSegment(segment: string): string {
         return segment;
     }
 }
-
-
 
 function buildS3Path(endpointPath: string, ...parts: string[]): string {
     const segments = [
@@ -231,8 +198,6 @@ function buildS3Path(endpointPath: string, ...parts: string[]): string {
     const normalized = segments.map(encodeRfc3986).join("/");
     return normalized ? `/${normalized}` : "/";
 }
-
-
 
 function getTimestampParts(date: Date): { amzDate: string; dateStamp: string; } {
     const year = date.getUTCFullYear();
@@ -248,20 +213,14 @@ function getTimestampParts(date: Date): { amzDate: string; dateStamp: string; } 
     };
 }
 
-
-
 export async function sha256Hex(data: ArrayBuffer | string): Promise<string> {
     return bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", toArrayBuffer(data))));
 }
-
-
 
 async function hmacSha256(key: ArrayBuffer | string, value: string): Promise<ArrayBuffer> {
     const cryptoKey = await crypto.subtle.importKey("raw", toArrayBuffer(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
     return await crypto.subtle.sign("HMAC", cryptoKey, toArrayBuffer(value));
 }
-
-
 
 export function canonicalQuery(query: Record<string, string>): string {
     return Object.entries(query)
@@ -270,8 +229,6 @@ export function canonicalQuery(query: Record<string, string>): string {
         .map(([key, value]) => `${key}=${value}`)
         .join("&");
 }
-
-
 
 export function multipartPartSize(size: number, proxyLimit: number | null): number {
     if (size > S3_MAX_OBJECT_BYTES) throw new Error("S3 objects can't be larger than 5 TiB");
@@ -283,28 +240,18 @@ export function multipartPartSize(size: number, proxyLimit: number | null): numb
     return partSize;
 }
 
-
-
 export function needsMultipart(size: number, proxyLimit: number | null): boolean {
     return size > S3_MAX_PUT_BYTES || (proxyLimit != null && size > proxyLimit);
 }
-
-
 
 function xmlValue(xml: string, tag: string): string | undefined {
     const raw = new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(xml)?.[1];
     return raw?.replace(/&(lt|gt|quot|apos|amp);/g, (_, e: string) => ({ lt: "<", gt: ">", quot: "\"", apos: "'", amp: "&" })[e]!);
 }
 
-
-
 const xmlEscape = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-
-
 const describeS3Error = (status: number, body: string) => describeHttpFailure(ServiceType.S3, status, body);
-
-
 
 async function refusesUnsignedPayload(response: UploadRequestResponse): Promise<boolean> {
     const code = xmlValue(await response.text(), "Code");
@@ -312,8 +259,6 @@ async function refusesUnsignedPayload(response: UploadRequestResponse): Promise<
         || (response.status === 400 && code === "XAmzContentSHA256Mismatch")
         || (response.status === 501 && code === "NotImplemented");
 }
-
-
 
 interface S3Target {
     host: string;
@@ -326,14 +271,9 @@ interface S3Target {
     sessionToken?: string;
 }
 
-
-
 let clockOffsetMs = 0;
 
-
 const learnedRegions = new Map<string, string>();
-
-
 
 async function correctedFrom(target: S3Target, response: UploadRequestResponse, t: S3Transport): Promise<boolean> {
     if (response.status !== 403 && response.status !== 400) return false;
@@ -357,8 +297,6 @@ async function correctedFrom(target: S3Target, response: UploadRequestResponse, 
     }
     return false;
 }
-
-
 
 async function signedHeaders(target: S3Target, method: string, query: Record<string, string>, headers: Record<string, string>, payloadHash: string): Promise<Record<string, string>> {
     const { amzDate, dateStamp } = getTimestampParts(new Date(Date.now() + clockOffsetMs));
@@ -407,15 +345,11 @@ async function signedHeaders(target: S3Target, method: string, query: Record<str
     };
 }
 
-
-
 function requestUrl(target: S3Target, query: Record<string, string>): string {
     const url = new URL(target.url.href);
     url.search = canonicalQuery(query).replace(/=(?=&|$)/g, "");
     return url.href;
 }
-
-
 
 export async function uploadToS3(fileBlob: UploadBody, filename: string, t: S3Transport): Promise<string> {
     const {
@@ -476,6 +410,7 @@ export async function uploadToS3(fileBlob: UploadBody, filename: string, t: S3Tr
         ...!t.bucketCors && { "Content-Disposition": `inline; filename*=UTF-8''${encodeRfc3986(filename)}` }
     };
 
+    await t.approve(uploadUrl.toString());
     if (needsMultipart(fileBlob.size, proxyLimit)) {
         await multipartUpload(target, fileBlob, objectHeaders, unsigned, proxyLimit, t);
     } else {
@@ -513,11 +448,7 @@ export async function uploadToS3(fileBlob: UploadBody, filename: string, t: S3Tr
     return `${publicBase.replace(/\/+$/, "")}/${objectKeyPath}`;
 }
 
-
-
 const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-
-
 
 export async function signS3Delete(objectUrl: string): Promise<Record<string, string>> {
     const { s3Endpoint, s3Bucket, s3Region = "auto", s3AccessKeyId, s3SecretAccessKey, s3SessionToken } = settings.store;
@@ -527,8 +458,6 @@ export async function signS3Delete(objectUrl: string): Promise<Record<string, st
     const target: S3Target = { host: url.host, canonicalUri: url.pathname, url, region: learnedRegions.get(regionKey) ?? s3Region, regionKey, accessKeyId: s3AccessKeyId, secretAccessKey: s3SecretAccessKey, sessionToken: s3SessionToken || undefined };
     return signedHeaders(target, "DELETE", {}, {}, EMPTY_SHA256);
 }
-
-
 
 async function multipartUpload(target: S3Target, fileBlob: UploadBody, objectHeaders: Record<string, string>, unsignedParts: boolean, proxyLimit: number | null, t: S3Transport): Promise<void> {
     if (t.multipartBlocked) throw new Error(t.multipartBlocked);
@@ -656,7 +585,7 @@ export const clientName = () => IS_WEB ? "Web" : IS_VESKTOP ? "Vesktop" : "Deskt
 export const transportName = () => Native ? "native" : "renderer";
 
 export { getEmbedProxyService } from "./proxy";
-export { corsProxyAllowed, getActiveCorsProxyUrl, proxyAllowedHere } from "./proxy";
+export { getActiveCorsProxyUrl, proxyAllowedHere } from "./proxy";
 
 void primeDeviceState();
 
@@ -711,7 +640,9 @@ function uploadUrlCarriesKey(service: ServiceType): boolean {
     let raw = endpointOf(service);
     if (service === ServiceType.SHAREX) {
         try {
-            raw = buildShareXRequestUrl(parseShareXConfigFromSettings(), "upload.png");
+            const config = parseShareXConfigFromSettings();
+            raw = previewShareXRequestValue(config.RequestURL!, "upload.png", { config, urlEncode: true, field: "RequestURL" });
+            if (Object.keys(config.Parameters ?? {}).some(key => hasSecretQuery(new URL(`https://example.invalid/?${encodeURIComponent(key)}=value`)))) return true;
         } catch { }
     }
     const value = raw?.trim() ?? "";
@@ -944,10 +875,6 @@ export function subscribeUploadState(listener: () => void): () => void {
 
 export function getUploadState(): UploadProgressState {
     return uploadState;
-}
-
-export function isUploadInProgress(): boolean {
-    return isUploading || pumping;
 }
 
 interface UploadJob {
@@ -1346,15 +1273,16 @@ interface RequestTransport {
 const SIMPLE_REQUEST_BYTES_PER_SECOND = 256 * 1024;
 
 async function uploadRequestWithTimeout(requestUrl: string, options: RequestInit, { viaProxy, simple, bodyBytes }: RequestTransport): Promise<XhrResponse> {
-    return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        activeXhr = xhr;
-        xhrBodySent = false;
+    const xhr = new XMLHttpRequest();
+    activeXhr = xhr;
+    xhrBodySent = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    return new Promise<XhrResponse>((resolve, reject) => {
         let bodySent = false;
         let sentAny = false;
         const stallMs = getUploadTimeoutMs();
         const firstMs = simple ? Math.max(stallMs, RESPONSE_GRACE_MS + bodyBytes / SIMPLE_REQUEST_BYTES_PER_SECOND * 1000) : stallMs;
-        let timeout = setTimeout(() => xhr.abort(), firstMs);
+        timeout = setTimeout(() => xhr.abort(), firstMs);
         const armStallTimeout = (ms: number) => {
             clearTimeout(timeout);
             timeout = setTimeout(() => xhr.abort(), ms);
@@ -1380,7 +1308,13 @@ async function uploadRequestWithTimeout(requestUrl: string, options: RequestInit
                 armStallTimeout(Math.max(stallMs, RESPONSE_GRACE_MS));
             };
         }
-        xhr.onload = () => resolve(new XhrResponse(xhr));
+        xhr.onload = () => {
+            try {
+                resolve(new XhrResponse(xhr));
+            } catch (error) {
+                reject(error);
+            }
+        };
         xhr.onerror = () => reject(new TransportError(
             `Couldn't reach ${describeRequestTarget(requestUrl)}. The browser blocked the request (CORS) or the host is unreachable`,
             "network", viaProxy, bodySent, sentAny, !simple && !sentAny
@@ -1388,18 +1322,15 @@ async function uploadRequestWithTimeout(requestUrl: string, options: RequestInit
         xhr.onabort = () => reject(cancelRequested
             ? new UploadCancelledError()
             : new TransportError("Upload timed out", "timeout", viaProxy, bodySent, sentAny, false));
-        xhr.onloadend = () => {
-            clearTimeout(timeout);
-            if (!simple) {
-                xhr.upload.onprogress = null;
-                xhr.upload.onload = null;
-            }
-            if (activeXhr === xhr) {
-                activeXhr = null;
-            }
-        };
-
         xhr.send((options.body ?? null) as XMLHttpRequestBodyInit | null);
+    }).finally(() => {
+        clearTimeout(timeout);
+        if (!simple) {
+            xhr.upload.onprogress = null;
+            xhr.upload.onload = null;
+        }
+        xhr.onload = xhr.onerror = xhr.onabort = null;
+        if (activeXhr === xhr) activeXhr = null;
     });
 }
 
@@ -1449,6 +1380,8 @@ function nativeCeilingText(size: number): string | null {
 }
 
 class SpoolError extends Error { }
+
+class NativeBusyError extends Error { }
 
 interface Spool {
     id: string;
@@ -1569,16 +1502,18 @@ const MULTIPART_RESTART_TEXT = "S3-Compatible needs a multipart upload for files
 const CLEANUP_TIMEOUT_MS = 15000;
 
 function rendererCleanupRequest(url: string, headers: Record<string, string>, viaProxy: boolean): Promise<number> {
-    return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        const timer = setTimeout(() => xhr.abort(), CLEANUP_TIMEOUT_MS);
+    const xhr = new XMLHttpRequest();
+    const timer = setTimeout(() => xhr.abort(), CLEANUP_TIMEOUT_MS);
+    return new Promise<number>((resolve, reject) => {
         xhr.open("DELETE", viaProxy ? viaCorsProxy(url) : url);
         for (const [key, value] of Object.entries(headers)) xhr.setRequestHeader(key, value);
         xhr.onload = () => resolve(xhr.status);
         xhr.onerror = () => reject(new Error("network error (the bucket's CORS rules must allow DELETE)"));
         xhr.onabort = () => reject(new Error(`no answer within ${CLEANUP_TIMEOUT_MS / 1000} s`));
-        xhr.onloadend = () => clearTimeout(timer);
         xhr.send();
+    }).finally(() => {
+        clearTimeout(timer);
+        xhr.onload = xhr.onerror = xhr.onabort = null;
     });
 }
 
@@ -1614,6 +1549,7 @@ function s3Transport(): S3Transport {
         async prepare(body) {
             if (Native && !isSpooled(body)) await spoolFor(body);
         },
+        approve: approveOrigin,
         part: partOf,
         async abort(url, headers) {
             if (!Native) return rendererCleanupRequest(url, headers, proxied && requestRoute(ServiceType.S3) === "proxy");
@@ -1713,10 +1649,33 @@ export function withZeroX0Agent(url: string, options: NativeUploadRequestOptions
     return { ...options, headers: { ...options.headers, "User-Agent": ZEROX0_USER_AGENT } };
 }
 
+async function originApproved(url: string): Promise<boolean> {
+    const native = Native;
+    const target = URL.canParse(url) ? new URL(url) : null;
+    if (typeof native?.requestOriginApproval !== "function" || !/^https?:$/.test(target?.protocol ?? "") || isBuiltInOrigin(url)) return true;
+    return await native.requestOriginApproval(url).catch(() => null) !== "cancelled";
+}
+
+async function approveOrigin(url: string): Promise<void> {
+    if (await originApproved(url)) return;
+    cancelRequested = true;
+    throw new UploadCancelledError();
+}
+
+export async function listApprovedServers(): Promise<string[] | null> {
+    if (typeof Native?.listApprovedOrigins !== "function") return null;
+    return Native.listApprovedOrigins().catch(() => []);
+}
+
+export async function resetApprovedServers(): Promise<boolean> {
+    return await Native?.forgetApprovedOrigins?.().catch(() => false) === true;
+}
+
 async function nativeAttempt(url: string, options: NativeUploadRequestOptions, fileBlob: RequestBody | null, viaProxy = false): Promise<NativeUploadResult> {
     const insecureOrigin = viaProxy ? undefined : insecureOriginFor(url);
     const refusal = viaProxy ? null : httpRefusal(url, insecureOrigin);
     if (refusal) throw new Error(refusal);
+    await approveOrigin(url);
     const body = fileBlob ? await nativeBody(fileBlob) : new ArrayBuffer(0);
     const service = currentAttemptService;
     const user = !viaProxy && service !== null && SERVICES[service]?.web === "user";
@@ -1724,6 +1683,7 @@ async function nativeAttempt(url: string, options: NativeUploadRequestOptions, f
         url, ...withZeroX0Agent(url, options), stallTimeoutMs: getUploadTimeoutMs(),
         ...insecureOrigin && { insecureOrigin }, ...viaProxy && { viaProxy: true }, ...user && { resolveAddresses: true }
     }, body);
+    if (result.busy) throw new NativeBusyError(result.error);
     if (!result.success && result.cancelled) throw new UploadCancelledError();
     if (result.error) result.error = redactText(result.error);
     if (user) noteLanAddresses(url, result.success ? [result.remoteAddress] : result.failure?.addresses);
@@ -1955,6 +1915,7 @@ async function nativeServiceRequest(url: string, options: ServiceRequestOptions,
     const bodyBytes = fileBlob ? bodySize({ name: requestOptions.filename ?? "", size: fileBlob.size }, service) : 0;
     const label = serviceLabel(service);
     const anonymousOptions = withoutOptionalCredentials(service, requestOptions);
+    await approveOrigin(url);
 
     const pinned = pinnedOrigins.has(origin);
     const confirmed = rerunConfirmed?.service === service && rerunConfirmed.origin === origin;
@@ -2420,22 +2381,18 @@ function parseShareXConfigFromSettings(): ShareXUploaderConfig {
     return config;
 }
 
-function buildShareXRequestUrl(config: ShareXUploaderConfig, filename: string): string {
-    const base = resolveShareXRequestValue(config.RequestURL!.trim(), filename, { config, urlEncode: true, field: "RequestURL" });
+async function buildShareXRequestUrl(config: ShareXUploaderConfig, filename: string): Promise<string> {
+    const base = await resolveShareXRequestValue(config.RequestURL!.trim(), filename, { config, urlEncode: true, field: "RequestURL" });
     const params = config.Parameters;
     if (!params || typeof params !== "object" || !Object.keys(params).length) {
         return base;
     }
 
-    try {
-        const url = new URL(base);
-        for (const [key, value] of Object.entries(params)) {
-            url.searchParams.set(key, resolveShareXRequestValue(value as string | number | boolean, filename, { config, field: `Parameters.${key}` }));
-        }
-        return url.toString();
-    } catch {
-        return base;
+    const url = new URL(base);
+    for (const [key, value] of Object.entries(params)) {
+        url.searchParams.set(key, await resolveShareXRequestValue(value as string | number | boolean, filename, { config, field: `Parameters.${key}` }));
     }
+    return url.toString();
 }
 
 interface Kept {
@@ -2469,10 +2426,10 @@ function keepInHistory(url: string, service: ServiceType, size: number, kept: Ke
     return id;
 }
 
-function shareXDeletionUrl(config: ShareXUploaderConfig, requestUrl: string, responseText: string, responseJson: unknown, answer: Parameters<typeof resolveShareXTemplate>[3]): string | null {
+async function shareXDeletionUrl(config: ShareXUploaderConfig, requestUrl: string, responseText: string, responseJson: unknown, answer: Parameters<typeof resolveShareXTemplate>[3]): Promise<string | null> {
     let url: string;
     try {
-        url = trimAscii(resolveShareXTemplate(config.DeletionURL, responseText, responseJson, { ...answer, field: "DeletionURL" }) ?? "");
+        url = trimAscii(await resolveShareXTemplate(config.DeletionURL, responseText, responseJson, { ...answer, field: "DeletionURL" }) ?? "");
     } catch {
         return null;
     }
@@ -2485,14 +2442,16 @@ function shareXDeletionUrl(config: ShareXUploaderConfig, requestUrl: string, res
 async function uploadToShareX(fileBlob: UploadBody, filename: string): Promise<string> {
     const config = parseShareXConfigFromSettings();
     const method = (config.RequestMethod || "POST").toUpperCase();
-    const requestUrl = buildShareXRequestUrl(config, filename);
+    const requestUrl = await buildShareXRequestUrl(config, filename);
     const bodyType = (config.Body || "MultipartFormData").toLowerCase();
-    const headers = buildShareXHeaders(config, filename);
+    const headers = await buildShareXHeaders(config, filename);
 
     const args: Record<string, string> = {};
     for (const [key, value] of Object.entries(config.Arguments || {})) {
-        args[key] = resolveShareXRequestValue(value as string | number | boolean, filename, { config, field: `Arguments.${key}` });
+        args[key] = await resolveShareXRequestValue(value as string | number | boolean, filename, { config, field: `Arguments.${key}` });
     }
+
+    for (const value of [...Object.values(headers), ...Object.values(args), ...new URL(requestUrl).searchParams.values()]) rememberSessionSecret(value);
 
     const response = await serviceUploadRequest(requestUrl, bodyType === "binary"
         ? { method, headers, bodyType: "binary", filename }
@@ -2510,17 +2469,17 @@ async function uploadToShareX(fileBlob: UploadBody, filename: string): Promise<s
     if (!response.ok) {
         let configuredError = "";
         try {
-            configuredError = describeBody(resolveShareXTemplate(config.ErrorMessage, responseText, responseJson, { ...answer, field: "ErrorMessage" }) ?? "");
+            configuredError = describeBody(await resolveShareXTemplate(config.ErrorMessage, responseText, responseJson, { ...answer, field: "ErrorMessage" }) ?? "");
         } catch { }
         throw configuredError ? new Error(configuredError) : await httpFailure(response, responseText);
     }
 
-    const deletionUrl = shareXDeletionUrl(config, requestUrl, responseText, responseJson, answer);
+    const deletionUrl = await shareXDeletionUrl(config, requestUrl, responseText, responseJson, answer);
     attemptKept = {
         ...deletionUrl && { deletion: { kind: "sharex", url: deletionUrl } },
         ...URL.canParse(requestUrl) && { endpointOrigin: new URL(requestUrl).origin }
     };
-    const configuredUrl = trimAscii(resolveShareXTemplate(config.URL, responseText, responseJson, answer) ?? "");
+    const configuredUrl = trimAscii(await resolveShareXTemplate(config.URL, responseText, responseJson, answer) ?? "");
     const fallbackUrl = typeof responseJson === "object" && responseJson && "url" in responseJson
         ? String((responseJson as Record<string, unknown>).url || "")
         : responseText;
@@ -2674,6 +2633,10 @@ async function canChunk(body: UploadBody, chunkSize: number): Promise<boolean> {
     return canSpool() && await spoolFor(body) !== null;
 }
 
+function postMultipart(url: string, file: RequestBody, filename: string, options: { headers?: Record<string, string>; fields?: Record<string, string>; fileFieldName?: string; } = {}): Promise<UploadHttpResponse> {
+    return serviceUploadRequest(url, { method: "POST", bodyType: "multipart", fileFieldName: "file", filename, ...options }, file);
+}
+
 async function uploadZiplineChunks(base: string, headers: Record<string, string>, body: UploadBody, filename: string, chunkSize: number): Promise<string | null> {
     const total = body.size;
     const parts = Math.ceil(total / chunkSize);
@@ -2687,9 +2650,8 @@ async function uploadZiplineChunks(base: string, headers: Record<string, string>
             multipart = { done: offset, total, part: n + 1, parts, last };
             setUploadState({ phase: "uploading", status: uploadingStatus(), ...n === 0 && { percent: 0, transferredBytes: 0, totalBytes: total } });
             const { body: part } = await partOf(body, offset, length, false);
-            const response = await serviceUploadRequest(`${base}/api/upload/partial`, {
-                method: "POST",
-                headers: {
+            const response = await postMultipart(`${base}/api/upload/partial`, part, filename, {
+        headers: {
                     ...headers,
                     ...token && { "x-zipline-p-token": token },
                     "x-zipline-p-filename": encodeURIComponent(filename),
@@ -2697,11 +2659,8 @@ async function uploadZiplineChunks(base: string, headers: Record<string, string>
                     "x-zipline-p-content-length": String(total),
                     "x-zipline-p-lastchunk": String(last),
                     "content-range": `bytes ${offset}-${offset + length - 1}/${total}`
-                },
-                bodyType: "multipart",
-                fileFieldName: "file",
-                filename
-            }, part);
+                }
+    });
             const data = await readZiplineAnswer(response);
             if (last) {
                 multipart = null;
@@ -2750,13 +2709,9 @@ async function uploadToZipline(fileBlob: UploadBody, filename: string): Promise<
         if (cancelRequested) throw new UploadCancelledError();
     }
 
-    const response = await serviceUploadRequest(`${baseUrl}/api/upload`, {
-        method: "POST",
-        headers,
-        bodyType: "multipart",
-        fileFieldName: "file",
-        filename
-    }, fileBlob);
+    const response = await postMultipart(`${baseUrl}/api/upload`, fileBlob, filename, {
+        headers
+    });
 
     return ziplineLink(await readZiplineAnswer(response));
 }
@@ -2768,15 +2723,11 @@ async function uploadToNest(fileBlob: UploadBody, filename: string): Promise<str
         throw new Error("Nest token is required");
     }
 
-    const response = await serviceUploadRequest("https://nest.rip/api/files/upload", {
-        method: "POST",
+    const response = await postMultipart("https://nest.rip/api/files/upload", fileBlob, filename, {
         headers: {
             "Authorization": nestToken
-        },
-        bodyType: "multipart",
-        fileFieldName: "file",
-        filename
-    }, fileBlob);
+        }
+    });
 
     if (!response.ok) throw await httpFailure(response);
 
@@ -2853,13 +2804,9 @@ async function uploadToEncryptingHost(fileBlob: UploadBody, filename: string): P
         fields.fakelink = config.fakelink;
     }
 
-    const response = await serviceUploadRequest("https://encrypting.host/upload", {
-        method: "POST",
-        bodyType: "multipart",
-        fields,
-        fileFieldName: "file",
-        filename
-    }, fileBlob);
+    const response = await postMultipart("https://encrypting.host/upload", fileBlob, filename, {
+        fields
+    });
 
     const { text, json } = await readTextAndJson(response);
     const data = json as { url?: string; error?: string; } | null;
@@ -2889,8 +2836,8 @@ export interface ConfigProblem {
 const PROBLEM_ORDER: readonly ConfigProblem["kind"][] = ["platform", "credentials", "consent"];
 
 export function getServiceConfigProblems(service: ServiceType): ConfigProblem[] {
+    if (!Object.hasOwn(SERVICES, service)) return [{ kind: "platform", message: `${service} isn't a host this version of BigFileUpload knows` }];
     const info = SERVICES[service];
-    if (!info) return [{ kind: "platform", message: `${service} isn't a host this version of BigFileUpload knows` }];
 
     const problems: ConfigProblem[] = [];
     if (!Native && info.web === "unsupported") problems.push({ kind: "platform", message: `${info.label} doesn't work on Vencord Web` });
@@ -2947,13 +2894,9 @@ async function uploadToEzHost(fileBlob: UploadBody, filename: string): Promise<s
 
     if (!ezHostKey) throw new Error("E-Z Host API key is required");
 
-    const response = await serviceUploadRequest("https://api.e-z.host/files", {
-        method: "POST",
-        headers: { key: ezHostKey },
-        bodyType: "multipart",
-        fileFieldName: "file",
-        filename
-    }, fileBlob);
+    const response = await postMultipart("https://api.e-z.host/files", fileBlob, filename, {
+        headers: { key: ezHostKey }
+    });
 
     if (!response.ok) throw await httpFailure(response);
 
@@ -2973,13 +2916,10 @@ async function uploadToCatbox(fileBlob: UploadBody, filename: string): Promise<s
     const fields: Record<string, string> = { reqtype: "fileupload" };
     if (catboxUserhash) fields.userhash = catboxUserhash;
 
-    const response = await serviceUploadRequest("https://catbox.moe/user/api.php", {
-        method: "POST",
-        bodyType: "multipart",
+    const response = await postMultipart("https://catbox.moe/user/api.php", fileBlob, filename, {
         fields,
-        fileFieldName: "fileToUpload",
-        filename
-    }, fileBlob);
+        fileFieldName: "fileToUpload"
+    });
 
     const url = await readPlainTextUrl(response);
     const name = catboxFileName(url);
@@ -3003,13 +2943,9 @@ async function uploadTo0x0(fileBlob: UploadBody, filename: string): Promise<stri
     if (zeroX0Secret) fields.secret = "";
     if (typeof zeroX0Expiry === "string" && Object.hasOwn(ZEROX0_KEPT, zeroX0Expiry)) fields.expires = zeroX0Expiry;
 
-    const response = await serviceUploadRequest("https://0x0.st", {
-        method: "POST",
-        bodyType: "multipart",
-        fields,
-        fileFieldName: "file",
-        filename
-    }, fileBlob);
+    const response = await postMultipart("https://0x0.st", fileBlob, filename, {
+        fields
+    });
 
     const url = await readPlainTextUrl(response);
     const token = response.headers.get("x-token")?.trim();
@@ -3025,13 +2961,10 @@ async function uploadToLitterbox(fileBlob: UploadBody, filename: string): Promis
     const fields: Record<string, string> = { reqtype: "fileupload", time: litterboxExpiry || "24h" };
     if (litterboxFileNameLength === "16") fields.fileNameLength = "16";
 
-    const response = await serviceUploadRequest("https://litterbox.catbox.moe/resources/internals/api.php", {
-        method: "POST",
-        bodyType: "multipart",
+    const response = await postMultipart("https://litterbox.catbox.moe/resources/internals/api.php", fileBlob, filename, {
         fields,
-        fileFieldName: "fileToUpload",
-        filename
-    }, fileBlob);
+        fileFieldName: "fileToUpload"
+    });
 
     return readPlainTextUrl(response);
 }
@@ -3074,13 +3007,9 @@ async function uploadToGofile(fileBlob: UploadBody, filename: string): Promise<s
     await loadGofileGuest();
     const guest = gofileGuestToken();
 
-    const send = (token: string | undefined) => serviceUploadRequest("https://upload.gofile.io/uploadfile", {
-        method: "POST",
-        bodyType: "multipart",
-        fields: token ? { token } : {},
-        fileFieldName: "file",
-        filename
-    }, fileBlob);
+    const send = (token: string | undefined) => postMultipart("https://upload.gofile.io/uploadfile", fileBlob, filename, {
+        fields: token ? { token } : {}
+    });
 
     const account = gofileToken?.trim() || undefined;
     let sent = account || guest;
@@ -3138,13 +3067,9 @@ async function uploadToTmpfiles(fileBlob: UploadBody, filename: string): Promise
     const { tmpfilesExpiry } = settings.store;
     const fields: Record<string, string> = typeof tmpfilesExpiry === "string" && Object.hasOwn(TMPFILES_KEPT, tmpfilesExpiry) ? { expire: tmpfilesExpiry } : {};
 
-    const response = await serviceUploadRequest("https://tmpfiles.org/api/v1/upload", {
-        method: "POST",
-        bodyType: "multipart",
-        fields,
-        fileFieldName: "file",
-        filename
-    }, fileBlob);
+    const response = await postMultipart("https://tmpfiles.org/api/v1/upload", fileBlob, filename, {
+        fields
+    });
 
     if (!response.ok) throw await httpFailure(response);
 
@@ -3179,12 +3104,7 @@ async function uploadToBuzzheavier(fileBlob: UploadBody, filename: string): Prom
 }
 
 async function uploadToTempSh(fileBlob: UploadBody, filename: string): Promise<string> {
-    const response = await serviceUploadRequest("https://temp.sh/upload", {
-        method: "POST",
-        bodyType: "multipart",
-        fileFieldName: "file",
-        filename
-    }, fileBlob);
+    const response = await postMultipart("https://temp.sh/upload", fileBlob, filename);
 
     return readPlainTextUrl(response);
 }
@@ -3211,15 +3131,11 @@ async function uploadToPixelVault(fileBlob: UploadBody, filename: string): Promi
         throw new Error("PixelVault upload key is required");
     }
 
-    const response = await serviceUploadRequest("https://pixelvault.co/", {
-        method: "POST",
+    const response = await postMultipart("https://pixelvault.co/", fileBlob, filename, {
         headers: {
             Authorization: pixelVaultKey.trim()
-        },
-        bodyType: "multipart",
-        fileFieldName: "file",
-        filename
-    }, fileBlob);
+        }
+    });
 
     const { text, json } = await readTextAndJson(response);
     const data = json as { resource?: string; url?: string; } | null;
@@ -3296,13 +3212,14 @@ export function parseWebdavRoot(webdavUrl: string): { base: string; sharePrefix:
     };
 }
 
-async function createWebdavShare(relativePath: string, serverOrigin: string, filename: string): Promise<string> {
-    const { webdavServerType, webdavShareType } = settings.store;
+async function createWebdavShare(relativePath: string, serverOrigin: string, filename: string, options: {
+    webdavServerType: string; webdavShareType: string; authHeader: string | null;
+}): Promise<string> {
+    const { webdavServerType, webdavShareType, authHeader } = options;
 
     const ocsVersion = webdavServerType === "owncloud" ? "v1" : "v2";
     const ocsUrl = `${serverOrigin}/ocs/${ocsVersion}.php/apps/files_sharing/api/v1/shares?format=json`;
 
-    const authHeader = buildWebdavAuthHeader();
     const ocsHeaders: Record<string, string> = {
         "OCS-APIRequest": "true",
         "Content-Type": "application/x-www-form-urlencoded"
@@ -3372,7 +3289,7 @@ function uniqueWebdavName(filename: string): string {
 }
 
 async function uploadToWebdav(fileBlob: UploadBody, filename: string): Promise<string> {
-    const { webdavUrl, webdavServerType, webdavDirectory } = settings.store;
+    const { webdavUrl, webdavServerType, webdavDirectory, webdavShareType } = settings.store;
 
     if (!webdavUrl) {
         throw new Error("WebDAV server URL is required");
@@ -3435,7 +3352,7 @@ async function uploadToWebdav(fileBlob: UploadBody, filename: string): Promise<s
     if (cancelRequested) throw new CommittedUploadError(`Cancelled before WebDAV shared ${sharePath}`, privateUrl);
     committedStage = true;
     try {
-        return validateUploadedUrl(await createWebdavShare(sharePath, root.base, filename), ServiceType.WEBDAV);
+        return validateUploadedUrl(await createWebdavShare(sharePath, root.base, filename, { webdavServerType, webdavShareType, authHeader }), ServiceType.WEBDAV);
     } catch (error) {
         const reason = error instanceof Error ? error.message : "Unknown error";
         throw new CommittedUploadError(`File uploaded to WebDAV (${sharePath}), but sharing it failed: ${reason}. No other host was tried`, privateUrl, cancelRequested);
@@ -3477,9 +3394,10 @@ function applyEmbedProxy(url: string, ctx: EmbedContext, wait?: EmbedWait): Prom
 let stopEmbedWait: (() => void) | null = null;
 
 function startEmbedChecks(file: UploadBody, fileName: string, primary: ServiceType, target: UploadTarget, displayName: string): Promise<VideoDims | undefined> | undefined {
-    if (!settings.store.embedProxyEnabled || !getMimeFromExtension(splitExtension(fileName)[1]).startsWith("video/")) return undefined;
+    if (!settings.store.embedProxyEnabled || !isVideoLink(`https://link.invalid/${encodeURIComponent(fileName)}`, file.type)) return undefined;
     void predictEmbedTarget({
         fileName,
+        contentType: file.type,
         size: file.size,
         service: primary,
         endpoint: SERVICES[primary]?.privacy === "private" ? endpointOf(primary) : undefined,
@@ -3855,6 +3773,7 @@ export interface UploadTarget {
 interface BatchLinks {
     urls: string[];
     divertedUrls: string[];
+    insertFailedUrls?: string[];
 }
 
 function insertedBracketed(link: string, displayName?: string): boolean {
@@ -3891,14 +3810,21 @@ const DISCORD_EPOCH = 1420070400000;
 
 const newNonce = () => (BigInt(Date.now() - DISCORD_EPOCH) << BigInt(22) | BigInt(Math.floor(Math.random() * 0x400000))).toString();
 
-async function sendLink(channelId: string, text: string): Promise<boolean> {
+async function sendLink(channelId: string, text: string, recoveryLink = text): Promise<boolean> {
     const nonce = newNonce();
     const options = { nonce, allowedMentions: { parse: [], replied_user: false } };
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let pending = false;
+    const sending = Promise.resolve().then(() => sendMessage(channelId, { content: text }, false, options));
+    void sending.catch(error => {
+        if (!pending) return;
+        logger.warn("Discord reported a late send failure", redactText(error instanceof Error ? error.message : "Unknown error"));
+        announceSendFailure(recoveryLink, describeChannel(channelId));
+    });
     try {
         await Promise.race([
-            Promise.resolve().then(() => sendMessage(channelId, { content: text }, false, options)),
-            new Promise<void>(resolve => { timer = setTimeout(resolve, SEND_WAIT_MS); })
+            sending,
+            new Promise<void>(resolve => { timer = setTimeout(() => { pending = true; resolve(); }, SEND_WAIT_MS); })
         ]);
         return true;
     } catch (error) {
@@ -3944,7 +3870,8 @@ async function notifyUploadSuccess({ plain, wrapped: finalUrl }: UploadLinks, ta
     }
 
     let sendFailed = false;
-    if (placed === "send" && !await sendLink(target.channelId!, text)) {
+    let insertFailed = false;
+    if (placed === "send" && !await sendLink(target.channelId!, text, finalUrl)) {
         sendFailed = true;
         placed = isOriginComposerVisible(target.channelId!) ? "insert" : "divert";
     }
@@ -3957,28 +3884,27 @@ async function notifyUploadSuccess({ plain, wrapped: finalUrl }: UploadLinks, ta
             if (sendFailed) showToast({ text: "Upload succeeded, but the link couldn't be sent. It was inserted into the chatbox instead", duration: 8000 });
         } catch (error) {
             logger.warn("Upload succeeded but inserting the link into the chat box failed", error);
-            if (!settings.store.autoCopy) {
-                try { await copyToClipboard(finalUrl); } catch { }
-            }
-            showToast({ text: "Upload succeeded, but the link couldn't be inserted. It was copied to your clipboard" });
+            insertFailed = true;
         }
     }
 
     const sent = () => `link sent${isOriginComposerVisible(target.channelId!) ? "" : ` to ${describeChannel(target.channelId!)}`}`;
-    if (copy) {
+    if (copy || insertFailed) {
         if (batch) {
             batch.urls.push(finalUrl);
             if (diverted) batch.divertedUrls.push(finalUrl);
+            if (insertFailed) (batch.insertFailedUrls ??= []).push(finalUrl);
             showToast({ text: placed === "send" ? `Upload successful, ${sent()}` : "Upload successful", variant: "success" });
         } else {
             try {
                 await copyToClipboard(finalUrl);
                 showToast(diverted
                     ? { text: divertedNotice(target, 1), duration: 8000 }
-                    : { text: placed === "send" ? `Upload successful, ${sent()} and copied` : "Upload successful, link copied", variant: "success" });
+                    : insertFailed ? { text: "Upload succeeded, but the link couldn't be inserted. It was copied to your clipboard", duration: 8000 }
+                        : { text: placed === "send" ? `Upload successful, ${sent()} and copied` : "Upload successful, link copied", variant: "success" });
             } catch (error) {
                 logger.warn("Upload succeeded but clipboard copy failed", error);
-                if (diverted) reportStrandedLinks([finalUrl], "uploaded but not inserted or copied");
+                if (diverted || insertFailed) reportStrandedLinks([finalUrl], "uploaded but not inserted or copied");
                 else showToast({ text: "Upload successful, but the link couldn't be copied" });
             }
         }
@@ -4025,7 +3951,7 @@ function pollNativeUploadProgress(): ProgressPoll {
                     void native.cancelUpload("stalled");
                 }
             }
-        } catch { /* Transient poll errors are ignored */ }
+        } catch { }
     }, 150);
     return {
         stop: () => {
@@ -4040,24 +3966,29 @@ function isProxiedNetworkError(error: unknown): boolean {
     return error instanceof TransportError && error.kind === "network" && error.viaProxy;
 }
 
-function lateCancelError(raw: unknown, service: ServiceType, fileName: string, size: number, kept: KeptNow, committed?: CommittedUploadError): Error {
+function keptUploadEntry(raw: unknown, service: ServiceType, fileName: string, size: number, kept: KeptNow, committed?: CommittedUploadError, cancelled = false): LateCancelEntry | null {
     const isPrivate = Boolean(committed);
     let url: string;
     try {
         url = finalizeUploadedUrl(validateUploadedUrl(raw, service), service);
     } catch {
-        return new UploadCancelledError();
+        return null;
     }
     const link = linkOf(url);
-    return new LateCancelError({
+    return {
         url: link,
         fileName,
         hostLabel: serviceLabel(service),
         retention: isPrivate ? undefined : hostRetention(service, size),
         private: isPrivate,
         shareInterrupted: committed?.shareInterrupted,
-        id: keepInHistory(link, service, size, kept, true)
-    });
+        id: keepInHistory(link, service, size, kept, cancelled)
+    };
+}
+
+function lateCancelError(raw: unknown, service: ServiceType, fileName: string, size: number, kept: KeptNow, committed?: CommittedUploadError): Error {
+    const entry = keptUploadEntry(raw, service, fileName, size, kept, committed, true);
+    return entry ? new LateCancelError(entry) : new UploadCancelledError();
 }
 
 class RateLimitError extends Error { }
@@ -4103,7 +4034,7 @@ let requestsRetried = false;
 
 async function retryRequest(error: unknown, { transient = false, resend = false }: RetryOptions = {}): Promise<boolean> {
     const service = currentAttemptService;
-    if (!service || isUploadCancelledError(error) || error instanceof SpoolError || error instanceof CommittedUploadError) return false;
+    if (!service || isUploadCancelledError(error) || (error instanceof SpoolError || error instanceof NativeBusyError) || error instanceof CommittedUploadError) return false;
     const label = serviceLabel(service);
     const stalled = attemptPoll?.stalled() ?? false;
     const wait = (ms: number) => Math.min(ms, getUploadTimeoutMs());
@@ -4392,9 +4323,15 @@ async function uploadWithFallbacks(fileBlob: UploadBody, filename: string, prima
             } catch (error) {
                 if (error instanceof CommittedUploadError) {
                     if (cancelRequested) throw lateCancelError(error.objectUrl, service, displayName, fileBlob.size, keptNow(), error);
+                    const entry = service === ServiceType.WEBDAV ? keptUploadEntry(error.objectUrl, service, displayName, fileBlob.size, keptNow(), error) : null;
+                    if (entry) {
+                        entry.shareFailed = true;
+                        setUploadState({ keptLink: entry });
+                        announceKeptUpload(entry);
+                    }
                     throw error;
                 }
-                if (isUploadCancelledError(error) || error instanceof SpoolError) {
+                if (isUploadCancelledError(error) || (error instanceof SpoolError || error instanceof NativeBusyError)) {
                     throw error;
                 }
                 const status = (lastOutcome as RequestOutcome | null)?.status ?? 0;
@@ -4539,7 +4476,9 @@ async function normalizeUploadBlob(blob: UploadBody, sourceUrl?: string): Promis
         if (blob.size > APNG_TO_GIF_MAX_BYTES) {
             showToast({ text: "APNG is too large to convert to GIF. Uploading as APNG" });
         } else {
-            const gifBlob = await convertApngToGif(isSpooled(blob) ? await readSpooledFile(blob) : blob);
+            const gifBlob = await convertApngToGif(isSpooled(blob) ? await readSpooledFile(blob) : blob, () => {
+                if (cancelRequested) throw new UploadCancelledError();
+            });
             if (gifBlob) {
                 blob = gifBlob;
                 ext = "gif";
@@ -4612,7 +4551,7 @@ async function uploadPreparedBlob(blob: UploadBody, target: UploadTarget, source
         const { url: uploadedUrl, service, kept } = result;
         const plain = finalizeUploadedUrl(uploadedUrl, service);
         const wrapped = outputsCanEmbed(plain, target, displayName)
-            ? await embedLink(plain, { service, size: normalizedBlob.size, dims })
+            ? await embedLink(plain, { service, size: normalizedBlob.size, contentType: normalizedBlob.type, dims })
             : plain;
         if (cancelRequested) throw lateCancelError(uploadedUrl, service, displayName, normalizedBlob.size, kept);
         keepInHistory(linkOf(plain), service, normalizedBlob.size, kept);
@@ -4665,15 +4604,19 @@ function reportCancel(error: unknown): void {
     setUploadState({ phase: "cancelled", status: reason || "Upload cancelled", canCancel: false, lateWait: false, percent: 0 });
 }
 
-async function copyBatchLinks({ urls, divertedUrls }: BatchLinks, target: UploadTarget, text: string): Promise<void> {
+async function copyBatchLinks({ urls, divertedUrls, insertFailedUrls = [] }: BatchLinks, target: UploadTarget, text: string): Promise<void> {
     try {
         await copyToClipboard(urls.join("\n"));
-        showToast(divertedUrls.length
+        showToast(insertFailedUrls.length
+            ? { text: "Links copied. Some couldn't be inserted into the chatbox", duration: 8000 }
+            : divertedUrls.length
             ? { text: divertedNotice(target, divertedUrls.length, urls.length), duration: 8000 }
             : { text, variant: "success" });
     } catch (error) {
         logger.warn("Batch upload succeeded but clipboard copy failed", error);
-        if (divertedUrls.length) reportStrandedLinks(divertedUrls, "uploaded but not inserted or copied");
+        const stranded = [...divertedUrls, ...insertFailedUrls];
+        if (stranded.length) reportStrandedLinks(stranded, "uploaded but not inserted or copied");
+        else showToast({ text: "Uploads succeeded, but the links couldn't be copied" });
     }
 }
 
@@ -4735,74 +4678,48 @@ async function runUrlUpload(url: string, target: UploadTarget, discordProxyUrl: 
             !res.success && res.policy && source === fetchUrl ? `Couldn't download ${describeRequestTarget(source)}: ${res.error}` : null;
         let originalFailure: SourceFailureFacts | null = null;
 
-        if (Native && canSpool() && typeof Native.fetchToSpool === "function" && typeof Native.spoolRead === "function") {
-            for (const source of sources) {
-                const stopPoll = pollNativeDownload();
-                const res = await Native.fetchToSpool(source, getUploadTimeoutMs(), SPOOL_SESSION, maxBytes).finally(stopPoll);
-                if (res.success && (cancelRequested || isPageInstead(source, res.contentType))) void Native.spoolRelease(res.id).catch(() => { });
-                if (cancelRequested || (!res.success && res.cancelled)) throw new UploadCancelledError();
+        if (Native) {
+            const native = Native;
+            const streamed = canSpool() && typeof native.fetchToSpool === "function" && typeof native.spoolRead === "function";
+            const download = (source: string, viaProxy?: true) => streamed
+                ? native.fetchToSpool(source, getUploadTimeoutMs(), SPOOL_SESSION, maxBytes, viaProxy)
+                : native.fetchFile(source, getUploadTimeoutMs(), maxBytes, viaProxy);
+            const take = (res: Awaited<ReturnType<typeof download>>, source: string, proxied = false): boolean => {
+                if ("busy" in res && res.busy) throw new NativeBusyError(res.error);
+                const page = res.success && isPageInstead(source, res.contentType);
+                if (res.success && "id" in res && (cancelRequested || page)) void native.spoolRelease(res.id).catch(() => {});
+                if (cancelRequested || ("cancelled" in res && res.cancelled)) throw new UploadCancelledError();
                 if (!res.success && res.tooLarge) throw downloadTooLarge(source, res.size ?? 0);
-                if (!res.success) logger.warn(`Couldn't download ${describeRequestTarget(source)} in the main process: ${res.error}`);
-                refused ??= refusalOf(source, res);
-                if (!res.success && source === fetchUrl) originalFailure = res;
-                if (res.success && !isPageInstead(source, res.contentType)) {
-                    contentType = res.contentType;
+                if (!res.success) {
+                    logger.warn(`Couldn't download ${describeRequestTarget(source)} ${proxied ? "through the CORS proxy" : "in the main process"}: ${res.error}`);
+                    refused ??= refusalOf(source, res);
+                    if (source === fetchUrl) originalFailure = res;
+                    return false;
+                }
+                if (page) return false;
+                contentType = res.contentType || "";
+                if ("id" in res) {
                     blob = { kind: "spool", id: res.id, size: res.size, type: contentType, head: new Blob([res.head]), sha256: res.sha256 };
                     adoptSpool(blob);
-                    break;
+                } else if (res.data) {
+                    blob = new Blob([res.data], { type: contentType });
                 }
+                return blob !== null;
+            };
+            for (const source of sources) {
+                const stopPoll = pollNativeDownload();
+                if (take(await download(source).finally(stopPoll), source)) break;
             }
             if (!blob && refused) throw new Error(refused);
             if (!blob && originalFailure && sourceProxyAllowed(fetchUrl, originalFailure)) {
-                const native = Native;
-                const res = await fetchFileThroughProxy(fetchUrl, viaProxy => native.fetchToSpool(viaProxy, getUploadTimeoutMs(), SPOOL_SESSION, maxBytes, true));
-                if (res.success && (cancelRequested || isPageInstead(fetchUrl, res.contentType))) void native.spoolRelease(res.id).catch(() => { });
-                if (cancelRequested || (!res.success && res.cancelled)) throw new UploadCancelledError();
-                if (!res.success && res.tooLarge) throw downloadTooLarge(fetchUrl, res.size ?? 0);
-                if (!res.success) logger.warn(`Couldn't download ${describeRequestTarget(fetchUrl)} through the CORS proxy: ${res.error}`);
-                else if (!isPageInstead(fetchUrl, res.contentType)) {
-                    contentType = res.contentType;
-                    blob = { kind: "spool", id: res.id, size: res.size, type: contentType, head: new Blob([res.head]), sha256: res.sha256 };
-                    adoptSpool(blob);
-                }
+                take(await fetchFileThroughProxy(fetchUrl, viaProxy => download(viaProxy, true)), fetchUrl, true);
             }
             if (!blob) {
-                const held = Math.min(limit ?? Infinity, NATIVE_MAX_BUFFER);
-                const fetched = await fetchBlobWithTimeout(fetchUrl, false, held, (source, size) => limit !== null && size > limit
-                    ? downloadTooLarge(source, size)
-                    : new DownloadTooLargeError("The desktop app couldn't download this file itself, and files over 1.9 GB can't be downloaded any other way"));
-                blob = fetched.blob;
-                contentType = fetched.contentType;
-            }
-        } else if (Native) {
-            for (const source of sources) {
-                const stopPoll = pollNativeDownload();
-                const res = await Native.fetchFile(source, getUploadTimeoutMs(), maxBytes).finally(stopPoll);
-                if (cancelRequested || res.cancelled) throw new UploadCancelledError();
-                if (!res.success && res.tooLarge) throw downloadTooLarge(source, res.size ?? 0);
-                if (!res.success) logger.warn(`Couldn't download ${describeRequestTarget(source)} in the main process: ${res.error}`);
-                refused ??= refusalOf(source, res);
-                if (!res.success && source === fetchUrl) originalFailure = res;
-                if (res.success && res.data && !isPageInstead(source, res.contentType)) {
-                    contentType = res.contentType || "";
-                    blob = new Blob([res.data], { type: contentType });
-                    break;
-                }
-            }
-            if (!blob && refused) throw new Error(refused);
-            if (!blob && originalFailure && sourceProxyAllowed(fetchUrl, originalFailure)) {
-                const native = Native;
-                const res = await fetchFileThroughProxy(fetchUrl, viaProxy => native.fetchFile(viaProxy, getUploadTimeoutMs(), maxBytes, true));
-                if (cancelRequested || res.cancelled) throw new UploadCancelledError();
-                if (!res.success && res.tooLarge) throw downloadTooLarge(fetchUrl, res.size ?? 0);
-                if (!res.success) logger.warn(`Couldn't download ${describeRequestTarget(fetchUrl)} through the CORS proxy: ${res.error}`);
-                else if (res.data && !isPageInstead(fetchUrl, res.contentType)) {
-                    contentType = res.contentType || "";
-                    blob = new Blob([res.data], { type: contentType });
-                }
-            }
-            if (!blob) {
-                const fetched = await fetchBlobWithTimeout(fetchUrl, false, limit);
+                const held = streamed ? Math.min(limit ?? Infinity, NATIVE_MAX_BUFFER) : limit;
+                const tooLarge = (source: string, size: number) => streamed && (limit === null || size <= limit)
+                    ? new DownloadTooLargeError("The desktop app couldn't download this file itself, and files over 1.9 GB can't be downloaded any other way")
+                    : downloadTooLarge(source, size);
+                const fetched = await fetchBlobWithTimeout(fetchUrl, false, held, tooLarge);
                 blob = fetched.blob;
                 contentType = fetched.contentType;
             }
@@ -4910,7 +4827,10 @@ async function firstTakeoverNotice(files: readonly File[]): Promise<boolean> {
     await whenPromptIdle();
     const alwaysIntercept = !settings.store.bypassDiscordUploadOnlyOverLimit;
     const text = takeoverNoticeText(files[0], alwaysIntercept);
-    if (!text) return true;
+    if (!text) {
+        showToast({ text: "No upload host is available. Check your host settings, then attach again", duration: 8000 });
+        return false;
+    }
     if (alwaysIntercept) {
         settings.store.takeoverNoticeShown = true;
         notifyTakeover(text);
@@ -4918,9 +4838,9 @@ async function firstTakeoverNotice(files: readonly File[]): Promise<boolean> {
     }
     const answer = await askTakeover(text);
     if (answer === "upload" || answer === "choose") settings.store.takeoverNoticeShown = true;
-    if (answer === "upload" || answer === "failed") return true;
+    if (answer === "upload") return true;
     const what = files.length > 1 ? `${files.length} files weren't` : `${files[0].name} wasn't`;
-    showToast({ text: answer === "choose" ? `${what} sent. Choose an upload host, then attach again` : `${what} sent. BigFileUpload will ask again next time`, duration: 8000 });
+    showToast({ text: answer === "choose" ? `${what} sent. Choose an upload host, then attach again` : `${what} sent. ${answer === "failed" ? "The upload question couldn't be shown. " : ""}Attach again to retry`, duration: 8000 });
     if (answer === "choose") openPluginSettings();
     return false;
 }
@@ -4969,7 +4889,7 @@ async function runFilesUpload(uploadFiles: File[], target: UploadTarget, job: Up
             try {
                 await uploadPreparedBlob(file, target, undefined, batch, { kind: "file", file });
             } catch (error) {
-                if (isUploadCancelledError(error) || uploadFiles.length === 1) throw error;
+                if (isUploadCancelledError(error) || error instanceof NativeBusyError || uploadFiles.length === 1) throw error;
 
                 const message = error instanceof Error ? error.message : "Unknown error";
                 failures.push(`${file.name} (${message})`);
@@ -4992,11 +4912,11 @@ async function runFilesUpload(uploadFiles: File[], target: UploadTarget, job: Up
     } catch (error) {
         const cancelled = isUploadCancelledError(error);
         if (cancelled) reportCancel(error);
-        if (cancelled && batch?.urls.length && settings.store.autoCopy) {
+        if (batch?.urls.length && (!cancelled || settings.store.autoCopy)) {
             const n = batch.urls.length;
             await copyBatchLinks(batch, target, `${n} ${n === 1 ? "link" : "links"} copied`);
-        } else if (batch?.divertedUrls.length) {
-            reportStrandedLinks(batch.divertedUrls, "not inserted (that chat isn't open in the main window)");
+        } else if (batch && (batch.divertedUrls.length || batch.insertFailedUrls?.length)) {
+            reportStrandedLinks([...batch.divertedUrls, ...batch.insertFailedUrls ?? []], "uploaded but not inserted or copied");
         }
         if (!cancelled) {
             const message = failureText(error);
@@ -5147,7 +5067,12 @@ export async function deleteFromHistory(entry: HistoryEntry): Promise<boolean> {
     }
     setDeleting(entry.id, true);
     try {
-        const { status, text } = await sendDeleteRequest(entry.service, deletion.kind, await deleteRequestFor(entry, deletion));
+        const request = await deleteRequestFor(entry, deletion);
+        if (!request.publicOnly && !await originApproved(request.url)) {
+            showToast({ text: "Deletion cancelled" });
+            return false;
+        }
+        const { status, text } = await sendDeleteRequest(entry.service, deletion.kind, request);
         const outcome = judgeDeletion(entry.service, deletion.kind, status, text);
         if ("failed" in outcome) {
             showToast({ text: `Couldn't delete it from ${label}: ${outcome.failed}`, variant: "critical", duration: 8000 });

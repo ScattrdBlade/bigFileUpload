@@ -72,8 +72,16 @@ export function openDeviceChannel(): void {
     if (channel || typeof BroadcastChannel !== "function") return;
     try {
         channel = new BroadcastChannel("BigFileUpload");
-        channel.onmessage = ({ data }: MessageEvent<{ keys?: Key[]; }>) => {
+        channel.onmessage = ({ data }: MessageEvent<{ keys?: Key[]; origins?: boolean; http?: boolean; }>) => {
             for (const key of data?.keys ?? []) written.delete(key);
+            if (data?.origins) invalidateOrigins();
+            if (data?.http) {
+                httpRevision++;
+                insecure = null;
+                loading = null;
+                notifyHttpPrefs();
+                void loadHttpOrigins();
+            }
             void primeDeviceState();
         };
     } catch (error) {
@@ -84,10 +92,9 @@ export function openDeviceChannel(): void {
 function write(key: Key, next: Partial<DeviceState>, value: unknown): Promise<void> {
     written.add(key);
     patch(next);
-    try {
-        channel?.postMessage({ keys: [key] });
-    } catch { }
-    return DataStore.set(STORE_KEYS[key], value).catch(error => logger.error(`Couldn't save this device's CORS-proxy state (${key})`, error));
+    return DataStore.set(STORE_KEYS[key], value).then(() => {
+        try { channel?.postMessage({ keys: [key] }); } catch { }
+    }).catch(error => logger.error(`Couldn't save this device's CORS-proxy state (${key})`, error));
 }
 
 export async function primeDeviceState(): Promise<void> {
@@ -115,8 +122,6 @@ export async function primeDeviceState(): Promise<void> {
 export const peekDeviceState = (): DeviceState => state;
 
 export const peekDeviceProxyAnswer = () => state.answer;
-
-export const peekDue = () => state.due;
 
 export const peekProxyLocal = () => state.proxyLocal ?? "off";
 
@@ -363,11 +368,13 @@ let origins: ProxyOrigins = { always: [], lan: [] };
 
 let originsLoaded = false;
 
-const originChanges: ((o: ProxyOrigins) => ProxyOrigins)[] = [];
+let originQueue: Promise<void> = Promise.resolve();
 
 let originsLoading: Promise<void> | null = null;
 
 const originListeners = new Set<() => void>();
+
+const pendingRevocations = new Set<(o: ProxyOrigins) => ProxyOrigins>();
 
 function asAlways(value: unknown): AlwaysOrigin[] {
     if (!Array.isArray(value)) return [];
@@ -378,50 +385,65 @@ function asAlways(value: unknown): AlwaysOrigin[] {
 const asOrigins = (value: unknown) => Array.isArray(value) ? [...new Set(value.filter((o): o is string => typeof o === "string"))] : [];
 
 function setOrigins(next: ProxyOrigins): void {
-    origins = next;
+    origins = [...pendingRevocations].reduce((o, revoke) => revoke(o), next);
     for (const listener of originListeners) listener();
 }
 
-function persistOrigins(before: ProxyOrigins, after: ProxyOrigins): void {
-    const save = (key: string, value: unknown) => Promise.resolve().then(() => DataStore.set(key, value))
-        .catch(error => logger.warn("Couldn't save this device's CORS-proxy retry choices", error));
-    if (after.always !== before.always) void save(ALWAYS_KEY, after.always);
-    if (after.lan !== before.lan) void save(LAN_KEY, after.lan);
-}
-
 export function loadProxyOrigins(): Promise<void> {
-    return originsLoading ??= (async () => {
-        let read: ProxyOrigins = { always: [], lan: [] };
+    openDeviceChannel();
+    return originsLoading ??= Promise.resolve().then(async () => {
         try {
-            const [always, lan] = await Promise.all([DataStore.get<unknown>(ALWAYS_KEY), DataStore.get<unknown>(LAN_KEY)]);
-            read = { always: asAlways(always), lan: asOrigins(lan) };
+            const [always, lan] = await DataStore.getMany<unknown>([ALWAYS_KEY, LAN_KEY]);
+            originsLoaded = true;
+            setOrigins({ always: asAlways(always), lan: asOrigins(lan) });
         } catch (error) {
+            originsLoading = null;
+            originsLoaded = false;
             logger.warn("Couldn't read this device's CORS-proxy retry choices", error);
         }
-        originsLoaded = true;
-        const after = originChanges.splice(0).reduce((o, change) => change(o), read);
-        persistOrigins(read, after);
-        setOrigins(after);
-    })();
+    });
 }
 
-function changeOrigins(change: (o: ProxyOrigins) => ProxyOrigins): void {
-    if (!originsLoaded) {
-        originChanges.push(change);
+const originKeys = (o: ProxyOrigins) => [...o.always.map(e => JSON.stringify(e)), ...o.lan];
+
+function invalidateOrigins(): void {
+    const before = originKeys(origins);
+    originsLoading = null;
+    originQueue = originQueue.then(async () => {
+        originsLoading = null;
+        await loadProxyOrigins();
+        const kept = new Set(originKeys(origins));
+        if (before.some(k => !kept.has(k))) for (const listener of forgetListeners) listener(null);
+    }).catch(error => logger.warn("Couldn't refresh this device's CORS-proxy retry choices", error));
+}
+
+function changeOrigins(change: (o: ProxyOrigins) => ProxyOrigins, revoke = false): void {
+    if (revoke) {
+        pendingRevocations.add(change);
         setOrigins(change(origins));
-        void loadProxyOrigins();
-        return;
     }
-    const before = origins;
-    const after = change(before);
-    if (after === before) return;
-    persistOrigins(before, after);
-    setOrigins(after);
+    originQueue = originQueue.then(async () => {
+        await loadProxyOrigins();
+        if (!originsLoaded) throw new Error("Stored retry choices couldn't be read, so they weren't replaced");
+        const next = change(origins);
+        if (!revoke && next.always === origins.always && next.lan === origins.lan) return;
+        const writes = await Promise.allSettled([
+            DataStore.update<unknown>(ALWAYS_KEY, old => change({ always: asAlways(old), lan: [] }).always),
+            DataStore.update<unknown>(LAN_KEY, old => change({ always: [], lan: asOrigins(old) }).lan)
+        ]);
+        try { channel?.postMessage({ origins: true }); } catch { }
+        for (const write of writes) if (write.status === "rejected") throw write.reason;
+        pendingRevocations.delete(change);
+        originsLoading = null;
+        await loadProxyOrigins();
+    }).catch(error => {
+        logger.warn("Couldn't save this device's CORS-proxy retry choices", error);
+        showToast({ text: "Couldn't save this device's proxy choices. Other tabs may still use the previous choices", variant: "critical", duration: 8000 });
+    });
 }
 
 function dropAlwaysOrigins(keep: (e: AlwaysOrigin) => boolean): void {
-    if (originsLoaded && origins.always.every(keep)) return;
-    changeOrigins(o => o.always.every(keep) ? o : { ...o, always: o.always.filter(keep) });
+    changeOrigins(o => ({ ...o, always: o.always.filter(keep) }), true);
 }
 
 export function addAlwaysOrigin(service: string, origin: string): void {
@@ -441,7 +463,7 @@ export function onAlwaysOriginsForgotten(listener: (entry: AlwaysOrigin | null) 
 
 export function removeAlwaysOrigin(entry: AlwaysOrigin): void {
     const same = (e: AlwaysOrigin) => e.service === entry.service && e.origin === entry.origin && e.proxy === entry.proxy && e.acceptId === entry.acceptId;
-    changeOrigins(o => o.always.some(same) ? { ...o, always: o.always.filter(e => !same(e)) } : o);
+    changeOrigins(o => ({ ...o, always: o.always.filter(e => !same(e)) }), true);
     for (const listener of forgetListeners) listener(entry);
 }
 
@@ -459,11 +481,11 @@ export function rememberLanOrigin(origin: string): void {
 }
 
 export function forgetLanOrigin(origin: string): void {
-    changeOrigins(o => o.lan.includes(origin) ? { ...o, lan: o.lan.filter(x => x !== origin) } : o);
+    changeOrigins(o => ({ ...o, lan: o.lan.filter(x => x !== origin) }), true);
 }
 
 export function forgetProxyOrigins(): void {
-    changeOrigins(o => o.always.length || o.lan.length ? { always: [], lan: [] } : o);
+    changeOrigins(() => ({ always: [], lan: [] }), true);
     for (const listener of forgetListeners) listener(null);
 }
 
@@ -496,6 +518,8 @@ const earlyChanges: ((list: InsecureHttpEntry[]) => InsecureHttpEntry[])[] = [];
 
 let loading: Promise<void> | null = null;
 
+let httpRevision = 0;
+
 const listenersHttpOrigins = new Set<() => void>();
 
 let version = 0;
@@ -521,7 +545,9 @@ function asEntries(value: unknown): InsecureHttpEntry[] {
 }
 
 export function loadHttpOrigins(): Promise<void> {
-    return loading ??= (async () => {
+    openDeviceChannel();
+    return loading ??= Promise.resolve().then(async () => {
+        const revision = httpRevision;
         try {
             const stored = await DataStore.get<unknown>(KEY);
             const origins = Array.isArray(stored) ? stored.filter((o): o is string => typeof o === "string") : [];
@@ -532,13 +558,13 @@ export function loadHttpOrigins(): Promise<void> {
         }
         try {
             const stored = asEntries(await DataStore.get<unknown>(INSECURE_KEY));
-            insecure = earlyChanges.reduce((list, change) => change(list), stored);
+            if (revision === httpRevision) insecure = earlyChanges.splice(0).reduce((list, change) => change(list), stored);
         } catch (error) {
             logger.warn("Couldn't read this device's \"Allow Insecure HTTP\" choices", error);
             insecure ??= [];
         }
         notifyHttpPrefs();
-    })();
+    });
 }
 
 export function hasUploadedToHttpOrigin(origin: string): boolean {
@@ -549,6 +575,7 @@ export function rememberHttpOrigin(origin: string): void {
     if (cache?.has(origin)) return;
     (cache ??= new Set()).add(origin);
     DataStore.update<unknown>(KEY, old => [...new Set([...(Array.isArray(old) ? old : []), origin])])
+        .then(() => { try { channel?.postMessage({ http: true }); } catch { } })
         .catch(error => logger.warn("Couldn't save an http origin used on this device", error));
 }
 
@@ -562,6 +589,7 @@ export function insecureHttpEntries(): readonly InsecureHttpEntry[] {
 }
 
 export function setInsecureHttp(service: string, origin: string, allowed: boolean): void {
+    httpRevision++;
     const change = (list: InsecureHttpEntry[]) => {
         const rest = list.filter(e => e.service !== service || e.origin !== origin);
         return allowed ? [...rest, { service, origin }] : rest;
@@ -570,6 +598,11 @@ export function setInsecureHttp(service: string, origin: string, allowed: boolea
     insecure = change(insecure ?? []);
     notifyHttpPrefs();
     DataStore.update<unknown>(INSECURE_KEY, old => change(asEntries(old)))
+        .then(() => {
+            loading = null;
+            void loadHttpOrigins();
+            try { channel?.postMessage({ http: true }); } catch { }
+        })
         .catch(error => logger.warn("Couldn't save this device's \"Allow Insecure HTTP\" choice", error));
 }
 
@@ -606,7 +639,10 @@ export function dropProxyFirst(origin?: string): void {
 }
 
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-    window.addEventListener("online", () => dropProxyFirst());
+    window.addEventListener("online", () => {
+        dropProxyFirst();
+        clearEmbedFailures();
+    });
     window.addEventListener("offline", () => dropProxyFirst());
 }
 
@@ -746,17 +782,19 @@ export function wrapUrl(t: EmbedTarget, url: string, dims?: VideoDims): string |
     }
 }
 
-export function isVideoLink(url: string): boolean {
+export function isVideoLink(url: string, contentType?: string): boolean {
     const ext = getUrlExtension(url);
-    return ext ? getMimeFromExtension(ext).startsWith("video/") : false;
+    return ext ? getMimeFromExtension(ext).startsWith("video/") : Boolean(contentType?.toLowerCase().startsWith("video/"));
 }
 
-function wrappableLink(url: string, service: ServiceType): boolean {
+function wrappableLink(url: string, service: ServiceType, contentType?: string): boolean {
     if (service === ServiceType.ENCRYPTINGHOST || /[?#]/.test(url) || !URL.canParse(url)) return false;
     const u = new URL(url);
     if (u.username || u.password || u.search || u.hash) return false;
     if (service === ServiceType.S3 && !syncedEmbedProxy().s3PublicUrl?.trim()) return false;
-    return isVideoLink(url);
+    if (service === ServiceType.WEBDAV && !isGenericWebdav(syncedEmbedProxy().webdavServerType, syncedEmbedProxy().webdavUrl)) return false;
+    if (!getUrlExtension(url) && SERVICES[service]?.directMedia !== true && service !== ServiceType.S3) return false;
+    return isVideoLink(url, contentType);
 }
 
 async function privateLinkReachable(url: string): Promise<boolean> {
@@ -782,6 +820,7 @@ export function isNativelyEmbeddable(url: string, service: ServiceType, size: nu
 export interface EmbedContext {
     service: ServiceType;
     size: number;
+    contentType?: string;
     dims?: Promise<VideoDims | undefined>;
 }
 
@@ -793,7 +832,7 @@ export interface EmbedWait {
 export async function wrapForEmbed(url: string, ctx: EmbedContext, wait?: EmbedWait): Promise<string> {
     const s = syncedEmbedProxy();
     if (!s.embedProxyEnabled) return url;
-    if (!wrappableLink(url, ctx.service)) return url;
+    if (!wrappableLink(url, ctx.service, ctx.contentType)) return url;
     if (SERVICES[ctx.service]?.privacy === "private" && !await privateLinkReachable(url)) return url;
     if (s.embedSkipNative !== false && isNativelyEmbeddable(url, ctx.service, ctx.size)) return url;
     const target = embedTarget();
@@ -821,6 +860,7 @@ export function embedFallbacks(primary: EmbedTarget): EmbedTarget[] {
 
 export interface EmbedPrediction {
     fileName: string;
+    contentType?: string;
     size: number;
     service: ServiceType;
     endpoint?: string;
@@ -830,8 +870,7 @@ export interface EmbedPrediction {
 export async function predictEmbedTarget(p: EmbedPrediction): Promise<EmbedTarget | null> {
     const s = syncedEmbedProxy();
     if (!s.embedProxyEnabled || !p.outputsCanEmbed) return null;
-    const ext = /\.([a-z0-9]{1,10})$/i.exec(p.fileName)?.[1];
-    if (!ext || !getMimeFromExtension(ext).startsWith("video/")) return null;
+    if (!isVideoLink(`https://link.invalid/${encodeURIComponent(p.fileName)}`, p.contentType)) return null;
     const info = SERVICES[p.service];
     if (!info || info.directMedia === false || p.service === ServiceType.ENCRYPTINGHOST) return null;
     if (p.service === ServiceType.S3 && !s.s3PublicUrl?.trim()) return null;
@@ -848,11 +887,21 @@ interface HealthEntry { health: Probed; at: number; }
 
 const results = new Map<string, HealthEntry>();
 
-const inflight = new Map<string, Promise<Probed>>();
+const inflight = new Map<string, { generation: number; probe: Promise<Probed>; }>();
 
 const listenersEmbedProxy = new Set<() => void>();
 
 let healthVersion = 0;
+
+let healthGeneration = 0;
+
+function clearEmbedFailures(): void {
+    healthGeneration++;
+    for (const [key, result] of results) if (result.health !== "up") results.delete(key);
+    downNoted.clear();
+    fallbackNoted.clear();
+    notifyHealth();
+}
 
 function notifyHealth(): void {
     healthVersion++;
@@ -869,20 +918,21 @@ export function probeEmbedTarget(target: EmbedTarget, force = false): Promise<Pr
     const key = targetKey(target);
     const cached = force ? null : freshResult(key);
     if (cached) return Promise.resolve(cached.health);
+    const generation = healthGeneration;
     const running = inflight.get(key);
-    if (running) return running;
+    if (running?.generation === generation) return running.probe;
     const probe = runProbe(target)
         .catch(error => {
             logger.warn(`Couldn't check ${embedTargetName(target)}`, error);
             return "down" as const;
         })
         .then(health => {
-            results.set(key, { health, at: Date.now() });
-            inflight.delete(key);
+            if (generation === healthGeneration) results.set(key, { health, at: Date.now() });
+            if (inflight.get(key)?.probe === probe) inflight.delete(key);
             notifyHealth();
             return health;
         });
-    inflight.set(key, probe);
+    inflight.set(key, { generation, probe });
     notifyHealth();
     return probe;
 }
@@ -1057,7 +1107,7 @@ const ENTITIES: Record<string, string> = { amp: "&", quot: "\"", apos: "'", lt: 
 
 function decodeEntities(value: string): string {
     return value.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => {
-        if (e[0] !== "#") return ENTITIES[e.toLowerCase()] ?? m;
+        if (e[0] !== "#") return Object.hasOwn(ENTITIES, e.toLowerCase()) ? ENTITIES[e.toLowerCase()] : m;
         const code = e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
         return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : m;
     });

@@ -1,5 +1,5 @@
 > [!TIP]
-> **If you run into any issues, please let me know on [Discord](https://discord.gg/jHDJaW9Gyz)**, or [report a bug](#reporting-bugs).
+> **If you run into any issues, please let me know in the [Support Server](https://discord.gg/jHDJaW9Gyz)**
 
 # Big File Upload (Vencord)
 
@@ -7,7 +7,7 @@ Bypass Discord's upload limit without Nitro. Big File Upload sends the files Dis
 
 ## Features
 
-- **Upload** from `+` → **Upload to Host**, right-click **Upload to \<host>** on media or links, or by taking over Discord's upload button, drag & drop and paste.
+- **Upload** through Discord's upload button, drag & drop and paste, or right-click **Upload to \<host>** on media or media links. With **Bypass Discord Upload Button** off, `+` → **Upload to Host** is available for manual uploads.
 - **17 hosts**, anonymous or your own. The maximum file size depends on the host (up to 8 GB per file on Desktop and Vesktop).
 - **Fallback Hosts** when one fails. Your own servers never fall back to a public host by themselves.
 - **Progress bar and queue**, with cancel.
@@ -35,10 +35,7 @@ Catbox and Litterbox refuse `.exe`, `.scr`, `.cpl`, `.jar` and Word documents. 0
 You can either **git clone** the repository OR **manually install** it by downloading it as a zip file.
 
 > [!WARNING]
-> Make sure you have the Vencord [developer build](https://docs.vencord.dev/installing/) installed.
-
-> [!IMPORTANT]
-> **Requires an up-to-date Vencord:** the `main` branch at commit [`c0fe7b1f`](https://github.com/Vendicated/Vencord/commit/c0fe7b1f) ("Update to new Toasts API") or newer. Older Vencord versions, including the v1.15.11 release, are not supported. On them the plugin's notifications crash Discord's UI. Update Vencord first (`git pull`, then `pnpm build`).
+> Make sure you have the Vencord [developer build](https://docs.vencord.dev/installing/) installed, built from the latest `main` (run `git pull` in your Vencord folder first). Older Vencord versions aren't supported.
 
 > [!IMPORTANT]
 > Inside the `Vencord` folder should be a folder called `src`. If you haven't already, create a folder called `userplugins` inside the `src` folder.
@@ -47,24 +44,26 @@ You can either **git clone** the repository OR **manually install** it by downlo
 
 The full cloning installation guide can be found [here](https://discord.com/channels/1015060230222131221/1257038407503446176/1257038407503446176) or via [the official Vencord Docs](https://docs.vencord.dev/installing/custom-plugins/).
 
-1. Direct your terminal (command prompt/CMD) to the `userplugins` folder, e.g. `cd src/userplugins`.
+1. Direct your terminal (CMD/PowerShell) to the `userplugins` folder (`cd src/userplugins`).
 2. Open the terminal and paste `git clone https://github.com/ScattrdBlade/bigFileUpload`
-3. Ensure it's structured as `src/userplugins/bigFileUpload` or `src/userplugins/bigFileUpload-main`
-4. Run `pnpm build` in the terminal (command prompt/CMD) and the plugin should be added.
+3. Ensure it's structured as `src/userplugins/bigFileUpload`
+4. Run `pnpm build` in the terminal (CMD/PowerShell) and the plugin should be added.
 
 ### MANUAL INSTALLATION
 
 1. Click the green `<> Code` button at the top right of the repository and select `Download ZIP`
 2. Unzip the downloaded ZIP file into the `userplugins` folder.
-3. Ensure it's structured as `src/userplugins/bigFileUpload` or `src/userplugins/bigFileUpload-main`
-4. Run `pnpm build` in the terminal (command prompt/CMD) and the plugin should be added.
+3. Ensure it's structured as `src/userplugins/bigFileUpload`
+4. Run `pnpm build` in the terminal (CMD/PowerShell) and the plugin should be added.
 
 ### AFTER INSTALLING OR UPDATING
 
 - **Fully restart Discord or Vesktop** (quit it from the tray). Part of BigFileUpload runs in the app and loads only then. Until you do, BigFileUpload shows "native helper not loaded" and uploads fail.
 - **Update every device that shares settings through Cloud Sync.** Older versions ignore Fallback Order's Inactive area, and a running device can overwrite changes made elsewhere, so check the list after syncing.
 
-**Coming from an older version?** Nothing you use is turned off: your Fallback Order and every host you set up stay active, and a notice lists those that need credentials with the server each sends to. Check that each is still yours. Hosts that need an account and that you never set up become inactive. Hosts that need no account stay active. A selected Zipline without URL or token, or PixelDrain without API key, is replaced by Catbox (its uploads already went to fallbacks), with a notice. New installs use Catbox.
+## Updating from an older version
+
+Nothing you use is turned off: your Fallback Order and every host you set up stay active, and a notice lists those that need credentials with the server each sends to. Check that each is still yours. Hosts that need an account and that you never set up become inactive. Hosts that need no account stay active. A selected Zipline without URL or token, or PixelDrain without API key, is replaced by Catbox (its uploads already went to fallbacks), with a notice. New installs use Catbox.
 
 ## Where your files go
 
@@ -91,8 +90,9 @@ Under **Discord Integration**:
 
 ## Uploading from a message or the + menu
 
-- **Right-click → Upload to \<host>** on an image, video or link uploads the original, not Discord's preview. Media from other sites comes from Discord's full-size copy first (the site never sees you), then the site, then the CORS proxy. Desktop and Vesktop refuse links to your own network.
-- **+ → Upload to Host** uploads a file you pick, or one already attached.
+- **Right-click → Upload to \<host>** on an image, video, audio file or media link uploads the original, not Discord's preview. This includes embedded images, video previews and the media viewer. Media from other sites comes from Discord's full-size copy first (the site never sees you), then the site, then the CORS proxy. Desktop and Vesktop refuse links to your own network.
+- If a video embed exposes only a provider player, the upload option explains that there's no direct link to the file.
+- With **Bypass Discord Upload Button** on, use Discord's normal `+` upload button. With it off, **+ → Upload to Host** uploads a file you pick, or one already attached.
 - Downloads from links show progress and stop early when a file is too big for every host.
 
 ## The link
@@ -100,12 +100,12 @@ Under **Discord Integration**:
 Under **Upload Behavior**:
 
 - **Insert URL into Chatbox** puts the link into the chat the file came from (or copies it, with a message, if you switched chats).
-- **Send Immediately** (off by default) posts each link as its own message, for uploads started from a message box. Right-click uploads, new forum posts or threads, chats you can't send in and over-long links go into the box instead. Sent links never ping. If Discord refuses (slowmode, permissions), the link goes into the box or is copied, never posted twice.
+- **Send Immediately** (off by default) posts each link as its own message, for uploads started from a message box. Right-click uploads, new forum posts or threads, chats you can't send in and over-long links go into the box instead. Sent links never ping. If Discord refuses right away (slowmode, permissions), the link goes into the box or is copied. If Discord hasn't answered after 15 seconds, the message is left to Discord. If it fails later, a notification lets you copy the link. Nothing is sent twice.
 - **Copy URL to Clipboard** copies it. Spoiler files are inserted as `||link||`. The copy stays plain.
 - **Link as Filename** shows the file name as the link text. While it's off, **Prevent Discord Embeds** wraps links in `<>`.
 - **Preserve Original Filename** keeps your file's name where the host allows it.
 - **Strip Query Parameters**, with **Which Parameters**: "Tracking parameters only (utm\_\*, fbclid, si, …)" (default) or "All query parameters". Encrypting.host links are never changed, since their query carries the decryption key. With "Tracking parameters only", custom-uploader links aren't changed either, since their query can carry a token.
-- **Convert APNG to GIF** (off by default) keeps loops and transparency (soft edges become hard). Files over 32 MB or with huge or too many large frames upload unconverted.
+- **Convert APNG to GIF** (off by default) keeps loops and transparency (soft edges become hard). Files over 32 MB, or with oversized or too many frames, upload unconverted. Cancel stops at the next conversion step.
 
 ## Progress, queue and cancelling
 
@@ -120,9 +120,9 @@ Under **Upload Behavior**, **Video Embed Proxy** (on by default) wraps video lin
 - **Embed Proxy Service**: "CORS Proxy" (the default, or autocompressor.net while the proxy isn't used for video links here), "autocompressor.net (AUTO-REZ Media Technologies)" or "x266.mov" (logs links with viewers' IP addresses for 30 days).
 - **Skip When Discord Can Embed** (on by default) leaves small direct mp4, webm and mov links from Catbox, Litterbox, 0x0.st and similar plain, so Discord plays them itself. The setting shows the size limit.
 - **Use My Proxy for Video Links** (off by default) uses your own proxy.
-- **Also Wrap Private Host Links** (off by default) wraps Zipline, S3, WebDAV and custom-uploader links.
+- **Also Wrap Private Host Links** (off by default) wraps Zipline, S3, WebDAV and custom-uploader links. Links without a file extension, Nextcloud and ownCloud share links and S3 links without a Public Base URL stay plain.
 - Never wrapped: Encrypting.host links, links with a query, `#fragment` or user name, and links inserted with Prevent Discord Embeds.
-- The service is checked from your device when you upload a video. If it's down, BigFileUpload tries the other services and says which one it used. If none is up, the link is posted plain. **Embed Service Status** shows its state, with **Check now**.
+- The service is checked from your device when you upload a video. If it's down, BigFileUpload tries the other services and says which one it used. If none is up, the link is posted plain. **Embed Service Status** shows its state, with **Check now**. When your connection comes back, failed checks are forgotten and the next video upload checks again.
 
 ## Settings that appear only when they apply
 
@@ -180,7 +180,7 @@ Before uploading to an https Zipline from Desktop or Vesktop, BigFileUpload asks
 <details>
 <summary><b>WebDAV</b></summary>
 
-File names are made unique, so nothing is overwritten. **Server Type** "Nextcloud" or "ownCloud" creates a share link in your **Share Link Format** (Share Page, Direct Download or Markdown Link). "Generic WebDAV", or any **Server URL** without `/remote.php/`, posts the file's own address. If the share link fails, nothing is posted and the file goes nowhere else.
+File names are made unique, so nothing is overwritten. **Server Type** "Nextcloud" or "ownCloud" creates a share link in your **Share Link Format** (Share Page, Direct Download or Markdown Link). "Generic WebDAV", or any **Server URL** without `/remote.php/`, posts the file's own address. If the share link fails, nothing is posted and no other host is tried. The file's own link, which needs your WebDAV login, is kept in Upload History, and a notification lets you copy it or delete the file. A public share may already exist, so check the server's Shares list before trying again.
 
 </details>
 
@@ -190,7 +190,8 @@ File names are made unique, so nothing is overwritten. **Server Type** "Nextclou
 Paste or import a `.sxcu` file, or use **Form View**. The body must be Multipart Form Data or Binary.
 
 - Supported: `{json:…}`, `{regex:…}`, `{xml:…}`, `{header:…}`, `{response}`, `{responseurl}`, `{filename}`, `{random:a|b}` and `{base64:…}`, nested, with `\` escapes (so a regex needs `\\d` for `\d`). Older `$json:…$` and `RegexList` configs work.
-- Refused: ShareX window functions (`{inputbox}`, `{prompt}`, `{select}`, `{outputbox}`, `{input}`), `{random}` in the Request URL, functions before the address's path, and slow regexes such as `(a+)+`.
+- Refused: ShareX window functions (`{inputbox}`, `{prompt}`, `{select}`, `{outputbox}`, `{input}`), `{random}` in the Request URL and functions before the address's path.
+- A `{regex:…}` gets one second, its pattern can be up to 1,000 characters and only the first 256 KiB of the answer is searched. Each field gets about five seconds in all. Clients that block blob workers can't use `{regex:…}`.
 - On Vencord Web, `{header:…}` sees only headers exposed to discord.com. File-name patterns (`%y`, `%rn`) aren't expanded.
 
 </details>
@@ -206,6 +207,7 @@ Paste or import a `.sxcu` file, or use **Form View**. The body must be Multipart
 
 - **Desktop and Vesktop** copy files over 4 MB to a private temporary file ("Preparing… x%") to keep memory use flat. It needs free disk space and is removed afterwards.
 - Plain `http://` works only for servers on your own network (192.168.x.x, 10.x.x.x, Tailscale's 100.x.x.x addresses, `.local` names and the like). Tailscale MagicDNS names (`*.ts.net`) don't count. **Allow Insecure HTTP**, under the server's address in its host settings, allows one public http Zipline, WebDAV or custom-uploader address on this device (Desktop and Vesktop). Vencord Web can't use http servers.
+- **Desktop and Vesktop** ask before the first upload or deletion on one of your own servers (Zipline, S3, WebDAV, custom uploader or your own proxy). **Trust** remembers it on this device. **Allow until restart** allows it until Discord restarts. **Cancel** stops it. Built-in hosts never ask, and synced or imported settings can't approve a server. **Approved Servers**, under **Upload Service**, lists trusted servers. **Reset Approved Servers** forgets them all.
 
 ## Network
 
@@ -267,9 +269,9 @@ BigFileUpload asks once per device whether to use a CORS proxy: at the first sta
 
 With **Video Embed Proxy** on and **Embed Proxy Service** set to "CORS Proxy" (the default), the proxy also wraps video links Discord can't embed. Whoever opens one goes through the proxy, which sees the link and their IP address. Discord fetches the preview through it too. A wrapped link breaks if the proxy goes down.
 
-- If you decline, video links go through autocompressor.net while it's up (AUTO-REZ Media Technologies), otherwise plain. Its page loads Google ads, so Google also gets the link and viewers' IP addresses.
-- The service is checked from your IP address when you upload a video, which lets it connect you to the link. If the check fails, the link is posted plain.
-- Your own proxy wraps video links only with **Use My Proxy for Video Links** on for it, and never when it isn't reachable from the internet (plain http, a local name or a private address). Until then autocompressor.net is used as above, whatever you answer. With it on, your proxy's address is in every video link, and anyone can use it and spend its quota.
+- If you decline, video links go through autocompressor.net while it's up (AUTO-REZ Media Technologies). Its page loads Google ads, so Google also gets the link and viewers' IP addresses. If autocompressor.net is definitely down, x266.mov is tried next. It logs links with viewers' IP addresses for 30 days.
+- The service is checked from your IP address when you upload a video, which lets it connect you to the link. A definite failure can switch to another eligible service. If no service is available, or its status is uncertain, the link is posted plain.
+- Your own proxy wraps video links only with **Use My Proxy for Video Links** on for it, and never when it isn't reachable from the internet (plain http, a local name or a private address). Until then autocompressor.net and x266.mov are used as above, whatever you answer. With it on, your proxy's address is in every video link, and anyone can use it and spend its quota.
 - Turn off Video Embed Proxy for plain links.
 
 **Cloud Sync and other devices**

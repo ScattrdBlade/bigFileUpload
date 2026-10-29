@@ -17,12 +17,12 @@ import { useForceUpdater } from "@utils/react";
 import { OptionType } from "@utils/types";
 import { React, Select, showToast, TextArea, TextInput } from "@webpack/common";
 
-import { CORS_PROXY, CORS_PROXY_PRESETS, CredentialValues, DEFAULT_ACTIVE_FALLBACKS, describeKeptHost, describeProxy, directWebHostNames, fallbackServiceOrder, FileTypeFilter, findProxyPreset, inactiveFallbacks, isFilled, isGenericWebdav, isPresetProxy, isProxyTemplate, isPublicProxyUrl, isR2Endpoint, LEGACY_FALLBACK_ORDER, legacyConfigured, logger, normalizeLegacyFallbackOrder, parseEncryptingHostDomains, parseFileTypeFilter, parseProxyTemplate, parseShareXConfig, PROXY_GUIDE_URL, proxyAddressProblem, proxyAddressText, proxyBodyLimit, proxyKey, RequestValueOptions, requiresCredentials, resolveShareXRequestValue, serviceLabel, SERVICES, ServiceType, ShareXUploaderConfig, TMPFILES_KEPT, validateShareXConfig, ZEROX0_KEPT } from "./types";
+import { CORS_PROXY, CORS_PROXY_PRESETS, CredentialValues, DEFAULT_ACTIVE_FALLBACKS, describeKeptHost, describeProxy, directWebHostNames, fallbackServiceOrder, FileTypeFilter, findProxyPreset, inactiveFallbacks, isFilled, isGenericWebdav, isPresetProxy, isProxyTemplate, isPublicProxyUrl, isR2Endpoint, LEGACY_FALLBACK_ORDER, legacyConfigured, logger, normalizeLegacyFallbackOrder, parseEncryptingHostDomains, parseFileTypeFilter, parseProxyTemplate, parseShareXConfig, previewShareXRequestValue, PROXY_GUIDE_URL, proxyAddressProblem, proxyAddressText, proxyBodyLimit, proxyKey, RequestValueOptions, requiresCredentials, serviceLabel, SERVICES, ServiceType, ShareXUploaderConfig, TMPFILES_KEPT, validateShareXConfig, ZEROX0_KEPT } from "./types";
 import { askToUseHost } from "./utils/dialogs";
 import { clearUploadHistory, forgetHistoryEntry, HistoryEntry, historyEntry, isDeleting, MAX_HISTORY, uploadHistory, useUploadHistory } from "./utils/privacy";
 import { AlwaysOrigin, answerProxyHere, checkEmbedNow, confirmRestoredProxy, consentPending, corsProxyAllowed, corsProxyWrapsVideo, EmbedTarget, embedTarget, embedTargetLabel, embedTargetName, forgetLanOrigin, forgetProxyOrigins, insecureHttpEntries, isInsecureHttpAllowed, NATIVE_EMBED_MAX, noticeProxyChange, peekDeviceProxyAnswer, peekDeviceState, peekEmbedHealth, peekFreshPending, peekProxyOrigins, proxyInvalid, proxyInvalidReason, redirectTickFor, removeAlwaysOrigin, restoreProxyUrlHere, setInsecureHttp, setProxyUrlHere, setRedirectTick, strictPending, useAlwaysOrigins, useDevicePrefs, useDeviceState, useEmbedHealth } from "./utils/proxy";
 import { httpHostKind, httpLanOnlyText } from "./utils/shared";
-import { canCheckS3PublicRead, carriesCredential, deleteFromHistory, deletionProblem, formatSize, getActiveCorsProxyUrl, getEmbedProxyService, getFallbackServices, getServiceConfigProblems, gofileGuestSynced, hasNativeHelper, hasStoredGofileGuestToken, hostRetention, INSECURE_HTTP_HOSTS, insecureHttpOffered, isHostConfigured, isUsableHere, listNames, needsProxyNote, proxiedCredentialHosts, proxyAllowedHere, proxyCredentialWarning, resetGofileGuestToken, routesThroughProxy, setGofileGuestSync, webDeclineOutlook, ziplineMaxBytes } from "./utils/upload";
+import { canCheckS3PublicRead, carriesCredential, deleteFromHistory, deletionProblem, formatSize, getActiveCorsProxyUrl, getEmbedProxyService, getFallbackServices, getServiceConfigProblems, gofileGuestSynced, hasNativeHelper, hasStoredGofileGuestToken, hostRetention, INSECURE_HTTP_HOSTS, insecureHttpOffered, isHostConfigured, isUsableHere, listApprovedServers, listNames, needsProxyNote, proxiedCredentialHosts, proxyAllowedHere, proxyCredentialWarning, resetApprovedServers, resetGofileGuestToken, routesThroughProxy, setGofileGuestSync, webDeclineOutlook, ziplineMaxBytes } from "./utils/upload";
 
 const cl = classNameFactory("vc-file-upload-settings-");
 
@@ -114,6 +114,8 @@ const webdavShareTypeOptions = [
     { label: "Markdown Link", value: "markdown" }
 ];
 
+const hiddenText = (description: string, defaultValue = "") => ({ type: OptionType.STRING as const, description, default: defaultValue, hidden: true });
+
 export const settings = definePluginSettings({
     serviceType: {
         type: OptionType.SELECT,
@@ -121,42 +123,12 @@ export const settings = definePluginSettings({
         options: serviceOptions,
         hidden: true
     },
-    serviceUrl: {
-        type: OptionType.STRING,
-        description: "Zipline service URL",
-        default: "",
-        hidden: true
-    },
-    ziplineToken: {
-        type: OptionType.STRING,
-        description: "Zipline auth token",
-        default: "",
-        hidden: true
-    },
-    folderId: {
-        type: OptionType.STRING,
-        description: "Optional Zipline folder ID",
-        default: "",
-        hidden: true
-    },
-    ezHostKey: {
-        type: OptionType.STRING,
-        description: "E-Z Host API key",
-        default: "",
-        hidden: true
-    },
-    nestToken: {
-        type: OptionType.STRING,
-        description: "Nest API token",
-        default: "",
-        hidden: true
-    },
-    encryptingHostKey: {
-        type: OptionType.STRING,
-        description: "Encrypting.host API key",
-        default: "",
-        hidden: true
-    },
+    serviceUrl: hiddenText("Zipline service URL"),
+    ziplineToken: hiddenText("Zipline auth token"),
+    folderId: hiddenText("Optional Zipline folder ID"),
+    ezHostKey: hiddenText("E-Z Host API key"),
+    nestToken: hiddenText("Nest API token"),
+    encryptingHostKey: hiddenText("Encrypting.host API key"),
     encryptingHostUrlStyle: {
         type: OptionType.SELECT,
         description: "Encrypting.host URL style",
@@ -164,78 +136,18 @@ export const settings = definePluginSettings({
         default: "query",
         hidden: true
     },
-    encryptingHostDomains: {
-        type: OptionType.STRING,
-        description: "Encrypting.host domains JSON list (blank means [\"normal\"])",
-        default: "[\"normal\"]",
-        hidden: true
-    },
-    encryptingHostTitle: {
-        type: OptionType.STRING,
-        description: "Optional Encrypting.host embed title",
-        default: "",
-        hidden: true
-    },
-    encryptingHostColor: {
-        type: OptionType.STRING,
-        description: "Optional Encrypting.host embed color",
-        default: "",
-        hidden: true
-    },
-    encryptingHostFakelink: {
-        type: OptionType.STRING,
-        description: "Optional Encrypting.host fake link",
-        default: "",
-        hidden: true
-    },
-    s3Endpoint: {
-        type: OptionType.STRING,
-        description: "S3-compatible endpoint URL",
-        default: "",
-        hidden: true
-    },
-    s3Bucket: {
-        type: OptionType.STRING,
-        description: "S3 bucket name",
-        default: "",
-        hidden: true
-    },
-    s3Region: {
-        type: OptionType.STRING,
-        description: "S3 region (use auto for R2)",
-        default: "auto",
-        hidden: true
-    },
-    s3AccessKeyId: {
-        type: OptionType.STRING,
-        description: "S3 access key ID",
-        default: "",
-        hidden: true
-    },
-    s3SecretAccessKey: {
-        type: OptionType.STRING,
-        description: "S3 secret access key",
-        default: "",
-        hidden: true
-    },
-    s3SessionToken: {
-        type: OptionType.STRING,
-        description: "Optional S3 session token",
-        default: "",
-        hidden: true
-    },
-    s3PublicUrl: {
-        type: OptionType.STRING,
-        description: "Optional public base URL",
-        default: "",
-        hidden: true
-    },
-    s3Prefix: {
-        type: OptionType.STRING,
-        description: "Optional S3 object key prefix",
-        default: "",
-        hidden: true
-    },
+    encryptingHostDomains: hiddenText("Encrypting.host domains JSON list (blank means [\"normal\"])", "[\"normal\"]"),
+    encryptingHostTitle: hiddenText("Optional Encrypting.host embed title"),
+    encryptingHostColor: hiddenText("Optional Encrypting.host embed color"),
+    encryptingHostFakelink: hiddenText("Optional Encrypting.host fake link"),
+    s3Endpoint: hiddenText("S3-compatible endpoint URL"),
+    s3Bucket: hiddenText("S3 bucket name"),
+    s3Region: hiddenText("S3 region (use auto for R2)", "auto"),
+    s3AccessKeyId: hiddenText("S3 access key ID"),
+    s3SecretAccessKey: hiddenText("S3 secret access key"),
+    s3SessionToken: hiddenText("Optional S3 session token"),
+    s3PublicUrl: hiddenText("Optional public base URL"),
+    s3Prefix: hiddenText("Optional S3 object key prefix"),
     s3ForcePathStyle: {
         type: OptionType.BOOLEAN,
         description: "Use path-style S3 URLs",
@@ -279,18 +191,8 @@ export const settings = definePluginSettings({
         options: tmpfilesExpiryOptions,
         hidden: true
     },
-    catboxUserhash: {
-        type: OptionType.STRING,
-        description: "Catbox userhash for account binding",
-        default: "",
-        hidden: true
-    },
-    sharexConfig: {
-        type: OptionType.STRING,
-        description: "ShareX/Custom uploader JSON",
-        default: "",
-        hidden: true
-    },
+    catboxUserhash: hiddenText("Catbox userhash for account binding"),
+    sharexConfig: hiddenText("ShareX/Custom uploader JSON"),
     disableFallbacks: {
         type: OptionType.BOOLEAN,
         description: "Disable fallback upload services",
@@ -363,12 +265,7 @@ export const settings = definePluginSettings({
         default: true,
         hidden: true
     },
-    gofileToken: {
-        type: OptionType.STRING,
-        description: "Optional GoFile API token",
-        default: "",
-        hidden: true
-    },
+    gofileToken: hiddenText("Optional GoFile API token"),
     gofileReuseGuestToken: {
         type: OptionType.BOOLEAN,
         description: "Reuse one GoFile guest account for anonymous uploads",
@@ -386,29 +283,14 @@ export const settings = definePluginSettings({
         default: false,
         hidden: true
     },
-    fallbackOrder: {
-        type: OptionType.STRING,
-        description: "Fallback uploader order (read by older versions)",
-        default: LEGACY_FALLBACK_ORDER.join(","),
-        hidden: true
-    },
+    fallbackOrder: hiddenText("Fallback uploader order (read by older versions)", LEGACY_FALLBACK_ORDER.join(",")),
     fallbackActive: {
         type: OptionType.STRING,
         description: "Active fallback hosts, in order, separated by commas. A host that isn't listed is never used.",
         hidden: true
     },
-    pixelVaultKey: {
-        type: OptionType.STRING,
-        description: "PixelVault upload key",
-        default: "",
-        hidden: true
-    },
-    pixelDrainKey: {
-        type: OptionType.STRING,
-        description: "PixelDrain API key",
-        default: "",
-        hidden: true
-    },
+    pixelVaultKey: hiddenText("PixelVault upload key"),
+    pixelDrainKey: hiddenText("PixelDrain API key"),
     uploadTimeoutMs: {
         type: OptionType.NUMBER,
         description: "Abort an upload if it makes no progress for this many milliseconds",
@@ -445,12 +327,7 @@ export const settings = definePluginSettings({
         default: false,
         hidden: true
     },
-    embedCustomProxyFor: {
-        type: OptionType.STRING,
-        description: "The custom proxy that \"Use My Proxy for Video Links\" was turned on for",
-        default: "",
-        hidden: true
-    },
+    embedCustomProxyFor: hiddenText("The custom proxy that \"Use My Proxy for Video Links\" was turned on for"),
     embedProxyPrivateHosts: {
         type: OptionType.BOOLEAN,
         description: "Also wrap video links from private hosts",
@@ -463,12 +340,7 @@ export const settings = definePluginSettings({
         default: true,
         hidden: true
     },
-    corsProxyUrl: {
-        type: OptionType.STRING,
-        description: "CORS proxy URL used for browser uploads",
-        default: CORS_PROXY,
-        hidden: true
-    },
+    corsProxyUrl: hiddenText("CORS proxy URL used for browser uploads", CORS_PROXY),
     disableCorsProxy: {
         type: OptionType.BOOLEAN,
         description: "Turn off the CORS proxy (Web uploads, the desktop blocked-host retry, and 'CORS Proxy' video wrapping, which then uses autocompressor.net)",
@@ -481,18 +353,8 @@ export const settings = definePluginSettings({
         default: false,
         hidden: true
     },
-    corsProxyCustomUrl: {
-        type: OptionType.STRING,
-        description: "Your own proxy's address, kept while a preset is picked",
-        default: "",
-        hidden: true
-    },
-    corsProxyNoRedirectsFor: {
-        type: OptionType.STRING,
-        description: "The proxy that \"My Proxy Passes Redirects Back Unchanged\" was ticked for",
-        default: "",
-        hidden: true
-    },
+    corsProxyCustomUrl: hiddenText("Your own proxy's address, kept while a preset is picked"),
+    corsProxyNoRedirectsFor: hiddenText("The proxy that \"My Proxy Passes Redirects Back Unchanged\" was ticked for"),
     sharexFormView: {
         type: OptionType.BOOLEAN,
         description: "Edit the custom uploader with individual fields instead of raw JSON",
@@ -523,30 +385,10 @@ export const settings = definePluginSettings({
         default: true,
         hidden: true
     },
-    webdavUrl: {
-        type: OptionType.STRING,
-        description: "WebDAV server URL",
-        default: "",
-        hidden: true
-    },
-    webdavUsername: {
-        type: OptionType.STRING,
-        description: "WebDAV username",
-        default: "",
-        hidden: true
-    },
-    webdavPassword: {
-        type: OptionType.STRING,
-        description: "WebDAV password or app token",
-        default: "",
-        hidden: true
-    },
-    webdavDirectory: {
-        type: OptionType.STRING,
-        description: "Optional subdirectory on the WebDAV server",
-        default: "",
-        hidden: true
-    },
+    webdavUrl: hiddenText("WebDAV server URL"),
+    webdavUsername: hiddenText("WebDAV username"),
+    webdavPassword: hiddenText("WebDAV password or app token"),
+    webdavDirectory: hiddenText("Optional subdirectory on the WebDAV server"),
     webdavServerType: {
         type: OptionType.SELECT,
         description: "WebDAV server type",
@@ -561,12 +403,7 @@ export const settings = definePluginSettings({
         default: "share-page",
         hidden: true
     },
-    uploadAllowedFileTypes: {
-        type: OptionType.STRING,
-        description: "File extensions BigFileUpload handles (e.g. png,jpg,mp4); !ext excludes one (e.g. !exe,!zip), also on top of a list. Leave empty to handle every file.",
-        default: "",
-        hidden: true
-    },
+    uploadAllowedFileTypes: hiddenText("File extensions BigFileUpload handles (e.g. png,jpg,mp4); !ext excludes one (e.g. !exe,!zip), also on top of a list. Leave empty to handle every file."),
     settingsComponent: {
         type: OptionType.COMPONENT,
         description: "Settings",
@@ -720,6 +557,18 @@ function SettingSwitch(props: {
             <Switch checked={checked} onChange={onChange} />
         </SettingsSection>
     );
+}
+
+type SettingKey<T extends OptionType> = {
+    [K in keyof typeof settings.def]: (typeof settings.def)[K]["type"] extends T ? K : never
+}[keyof typeof settings.def];
+
+function BoundTextInput({ setting, update, ...props }: Omit<TextInputProps, "value" | "onChange"> & { setting: SettingKey<OptionType.STRING>; update?: () => void; }) {
+    return <SettingTextInput {...props} value={settings.store[setting] ?? ""} onChange={value => { settings.store[setting] = value; update?.(); }} />;
+}
+
+function BoundSwitch({ setting, update, ...props }: Omit<Parameters<typeof SettingSwitch>[0], "checked" | "onChange"> & { setting: SettingKey<OptionType.BOOLEAN>; update?: () => void; }) {
+    return <SettingSwitch {...props} checked={Boolean(settings.store[setting])} onChange={value => { settings.store[setting] = value; update?.(); }} />;
 }
 
 const Sub = ({ children }: { children: React.ReactNode; }) => <div className={cl("sub")}>{children}</div>;
@@ -1042,7 +891,6 @@ const FALLBACK_ORDER_DESCRIPTION = "The selected host is tried first, then the a
 
 const DIRECT_WEB_HOSTS = directWebHostNames("and");
 
-
 function proxyLimitNote(): string {
     const limit = proxyBodyLimit(getActiveCorsProxyUrl());
     return limit == null ? "" : ` Files over ${formatSize(limit, true)} aren't sent through it.`;
@@ -1327,11 +1175,11 @@ function ShareXSection({ update, note, rows, vis }: { update: () => void; note?:
             {note}
             {rows.privateWrapNote && <PrivateHostWrapNote service={ServiceType.SHAREX} />}
             {rows.credentialWarning && <ProxyCredentialWarning service={ServiceType.SHAREX} />}
-            <SettingSwitch
+            <BoundSwitch
                 name="Form View"
                 description="Edit with individual fields instead of the raw JSON config box."
-                checked={Boolean(store.sharexFormView)}
-                onChange={v => { store.sharexFormView = v; update(); }}
+                setting="sharexFormView"
+                update={update}
             />
             <Sub>
                 {vis.sharexRawConfig ? (
@@ -1496,14 +1344,11 @@ function EmbedProxySettings({ update, vis }: { update: () => void; vis: Visibili
 
     return (
         <>
-            <SettingSwitch
+            <BoundSwitch
                 name="Video Embed Proxy"
                 description="Wrap video links in an embed service for better previews. Wrapped links stop working if the service goes down."
-                checked={Boolean(store.embedProxyEnabled)}
-                onChange={v => {
-                    store.embedProxyEnabled = v;
-                    update();
-                }}
+                setting="embedProxyEnabled"
+                update={update}
             />
 
             {vis.embedProxyService && (
@@ -1553,14 +1398,11 @@ function EmbedProxySettings({ update, vis }: { update: () => void; vis: Visibili
                     )}
 
                     {vis.embedPrivateHosts && (
-                        <SettingSwitch
+                        <BoundSwitch
                             name="Also Wrap Private Host Links"
                             description="Also wrap video links from Zipline, S3, WebDAV and custom uploaders. Links with a query string, http links and links on your network stay plain."
-                            checked={Boolean(store.embedProxyPrivateHosts)}
-                            onChange={v => {
-                                store.embedProxyPrivateHosts = v;
-                                update();
-                            }}
+                            setting="embedProxyPrivateHosts"
+                            update={update}
                         />
                     )}
 
@@ -1608,6 +1450,18 @@ function PrivateHostWrapNote({ service }: { service: ServiceType; }) {
     if (service === ServiceType.S3 && !s3PublicUrl?.trim()) return <div className={cl("host-note")}>Video links from this host are posted plain until you set a Public Base URL.</div>;
     if (service === ServiceType.WEBDAV && !isGenericWebdav(webdavServerType, webdavUrl)) return <div className={cl("host-note")}>Video links from this server are posted plain: its share links don't end in the file's name.</div>;
     return <div className={cl("host-note")}>Video links from this host are wrapped through {embedTargetLabel(target)} (Also Wrap Private Host Links is on).</div>;
+}
+
+function onRadioKeyDown(event: React.KeyboardEvent<HTMLDivElement>): void {
+    const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button[role="radio"]'));
+    const current = buttons.indexOf(event.target as HTMLButtonElement);
+    if (current < 0) return;
+    const { key } = event;
+    const direction = key === "ArrowRight" || key === "ArrowDown" ? 1 : key === "ArrowLeft" || key === "ArrowUp" ? -1 : 0;
+    const next = key === "Home" ? 0 : key === "End" ? buttons.length - 1 : direction ? (current + direction + buttons.length) % buttons.length : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    buttons[next].focus();
 }
 
 export function CorsProxyPicker({ update }: { update(): void; }) {
@@ -1696,13 +1550,14 @@ export function CorsProxyPicker({ update }: { update(): void; }) {
 
     return (
         <div className={cl("group")}>
-            <div className={cl("service-grid")} role="radiogroup" aria-label="CORS proxy">
+            <div className={cl("service-grid")} role="radiogroup" aria-label="CORS proxy" onKeyDown={onRadioKeyDown}>
                 {CORS_PROXY_PRESETS.map(p => (
                     <button
                         key={p.id}
                         type="button"
                         role="radio"
                         aria-checked={selectedPreset?.id === p.id}
+                        tabIndex={selectedPreset?.id === p.id || (!own && !selectedPreset && p === CORS_PROXY_PRESETS[0]) ? 0 : -1}
                         className={cl("service-option")}
                         data-selected={selectedPreset?.id === p.id}
                         onClick={() => writePreset(p.url)}
@@ -1714,6 +1569,7 @@ export function CorsProxyPicker({ update }: { update(): void; }) {
                     type="button"
                     role="radio"
                     aria-checked={own}
+                    tabIndex={own ? 0 : -1}
                     className={cl("service-option")}
                     data-selected={own}
                     onClick={chooseOwn}
@@ -1883,6 +1739,29 @@ function SavedCredentials({ vis, update }: { vis: Visibility; update: () => void
     );
 }
 
+function ApprovedServers() {
+    const [origins, setOrigins] = React.useState<string[] | null>(null);
+    const load = () => void listApprovedServers().then(setOrigins);
+    React.useEffect(load, []);
+    if (!origins?.length) return null;
+    const reset = async () => {
+        showToast(await resetApprovedServers() ? { text: "Approved servers reset", variant: "success" } : { text: "Couldn't reset the approved servers", variant: "critical" });
+        load();
+    };
+    return (
+        <SettingsSection id="approved-servers" name="Approved Servers" description="Your own servers this device trusts for uploads. Built-in hosts never ask.">
+            {origins.map(origin => (
+                <div key={origin} className={cl("secret-row")}>
+                    <div className={cl("secret-input")}>{origin}</div>
+                </div>
+            ))}
+            <div className={cl("actions")}>
+                <Button size="small" onClick={() => void reset()}>Reset Approved Servers</Button>
+            </div>
+        </SettingsSection>
+    );
+}
+
 function needsProxyText(): string {
     const o = webDeclineOutlook();
     const needs = `${serviceLabel(o.primary)} needs the CORS proxy on Vencord Web`;
@@ -1893,7 +1772,7 @@ function needsProxyText(): string {
             return `${needs}. Its links carry the decryption key, so BigFileUpload never moves its files to an unencrypted public host by itself. Files over Discord's limit are left to Discord unless an active private host can take them. Accept the CORS proxy, or choose another upload host.`;
         case "none": {
             const tried = o.userHost ? ` (${serviceLabel(o.userHost)} is tried directly and works only if its server allows discord.com)` : "";
-            return `${needs}. None of your active fallback hosts is known to work without it${tried}, so files over Discord's limit are left to Discord${o.suggestPublic ? `; turn on ${directWebHostNames("or")} under Fallback Order` : ""}.`;
+            return `${needs}. None of your active fallback hosts is known to work without it${tried}, so files over Discord's limit are left to Discord${o.suggestPublic ? `. Turn on ${directWebHostNames("or")} under Fallback Order` : ""}.`;
         }
         default: {
             const host = o.host!;
@@ -1919,6 +1798,7 @@ function UploadServiceGroup({ update }: { update: () => void; }) {
             />
             {vis.needsProxyNote && <div className={cl("host-note")}>{needsProxyText()}</div>}
             {vis.savedCredentials && <SavedCredentials vis={vis} update={update} />}
+            {!IS_WEB && <ApprovedServers />}
         </SettingsSection>
     );
 }
@@ -1929,14 +1809,11 @@ function FallbackControls({ update }: { update: () => void; }) {
 
     return (
         <>
-            <SettingSwitch
+            <BoundSwitch
                 name="Disable Fallback Hosts"
                 description="Only use the selected host."
-                checked={store.disableFallbacks}
-                onChange={v => {
-                    store.disableFallbacks = v;
-                    update();
-                }}
+                setting="disableFallbacks"
+                update={update}
             />
             {vis.primaryFailureMode && (
                 <Sub>
@@ -1972,28 +1849,26 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
                 {note}
                 {wrapNote}
                 {credentialWarning}
-                <SettingTextInput
+                <BoundTextInput
                     name="Service URL"
                     description="The URL of your Zipline instance"
-                    value={store.serviceUrl}
-                    onChange={v => { store.serviceUrl = v; update(); }}
+                    setting="serviceUrl"
+                    update={update}
                     placeholder="https://your-zipline-instance.com"
                     validate={v => endpointUrlProblem(v, httpRule(ServiceType.ZIPLINE, rows))}
                 />
                 <InsecureHttpSettings service={ServiceType.ZIPLINE} url={store.serviceUrl} rows={rows} />
-                <SettingTextInput
+                <BoundTextInput
                     name="Zipline Token"
                     description="Your Zipline API authorization token"
-                    value={store.ziplineToken}
-                    onChange={v => store.ziplineToken = v}
+                    setting="ziplineToken"
                     placeholder="Your Zipline API token"
                     secret
                 />
-                <SettingTextInput
+                <BoundTextInput
                     name="Folder ID"
                     description="Folder ID for uploads (leave empty for no folder)"
-                    value={store.folderId}
-                    onChange={v => store.folderId = v}
+                    setting="folderId"
                     placeholder="Leave empty for no folder"
                 />
             </SettingGroup>
@@ -2002,11 +1877,10 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
             <SettingGroup name="E-Z Host" description={"Connection details for E-Z Host uploads."}>
                 {note}
                 {credentialWarning}
-                <SettingTextInput
+                <BoundTextInput
                     name="E-Z Host API Key"
                     description="Your E-Z Host API key"
-                    value={store.ezHostKey}
-                    onChange={v => store.ezHostKey = v}
+                    setting="ezHostKey"
                     placeholder="Your E-Z Host API key"
                     secret
                 />
@@ -2016,11 +1890,10 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
             <SettingGroup name="Nest" description={"Connection details for Nest uploads."}>
                 {note}
                 {credentialWarning}
-                <SettingTextInput
+                <BoundTextInput
                     name="Nest Token"
                     description="Your Nest API authorization token"
-                    value={store.nestToken}
-                    onChange={v => store.nestToken = v}
+                    setting="nestToken"
                     placeholder="Your Nest API token"
                     secret
                 />
@@ -2030,11 +1903,10 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
             <SettingGroup name="Encrypting.host" description={"Connection details for Encrypting.host uploads."}>
                 {note}
                 {credentialWarning}
-                <SettingTextInput
+                <BoundTextInput
                     name="Encrypting.host API Key"
                     description="Your Encrypting.host API key"
-                    value={store.encryptingHostKey || ""}
-                    onChange={v => store.encryptingHostKey = v}
+                    setting="encryptingHostKey"
                     placeholder="Your Encrypting.host API key"
                     secret
                 />
@@ -2063,30 +1935,27 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
                 {(vis.encryptingHostTitle || vis.encryptingHostColor || vis.encryptingHostFakelink) && (
                     <Sub>
                         {vis.encryptingHostTitle && (
-                            <SettingTextInput
+                            <BoundTextInput
                                 name="Embed Title"
                                 description="Optional title for the Embed and Zero-width (zws) styles."
-                                value={store.encryptingHostTitle || ""}
-                                onChange={v => store.encryptingHostTitle = v}
+                                setting="encryptingHostTitle"
                                 placeholder="Optional title"
                             />
                         )}
                         {vis.encryptingHostColor && (
-                            <SettingTextInput
+                            <BoundTextInput
                                 name="Embed Color"
                                 description="Optional color for the Embed style."
-                                value={store.encryptingHostColor || ""}
-                                onChange={v => store.encryptingHostColor = v}
+                                setting="encryptingHostColor"
                                 placeholder="#5865F2"
                                 validate={hexColorProblem}
                             />
                         )}
                         {vis.encryptingHostFakelink && (
-                            <SettingTextInput
+                            <BoundTextInput
                                 name="Fake Link"
                                 description="Optional fake link value for fakelink style responses."
-                                value={store.encryptingHostFakelink || ""}
-                                onChange={v => store.encryptingHostFakelink = v}
+                                setting="encryptingHostFakelink"
                                 placeholder="Optional fake link"
                             />
                         )}
@@ -2099,68 +1968,62 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
                 {note}
                 {wrapNote}
                 {credentialWarning}
-                <SettingTextInput
+                <BoundTextInput
                     name="S3 Endpoint URL"
                     description="For example https://<accountid>.r2.cloudflarestorage.com."
-                    value={store.s3Endpoint}
-                    onChange={v => { store.s3Endpoint = v; update(); }}
+                    setting="s3Endpoint"
+                    update={update}
                     placeholder="https://your-endpoint.example.com"
                     validate={v => endpointUrlProblem(v, httpRule(ServiceType.S3, rows), { userInfo: false })}
                 />
                 <InsecureHttpSettings service={ServiceType.S3} url={store.s3Endpoint} rows={rows} />
                 {vis.s3SignPayload && (
                     <Sub>
-                        <SettingSwitch
+                        <BoundSwitch
                             name="Sign Payload"
                             description="Hash and sign each file. Slower for big files. Only for servers that refuse unsigned uploads."
-                            checked={Boolean(store.s3SignPayload)}
-                            onChange={v => store.s3SignPayload = v}
+                            setting="s3SignPayload"
                         />
                     </Sub>
                 )}
-                <SettingTextInput
+                <BoundTextInput
                     name="Bucket Name"
                     description="Bucket to upload into"
-                    value={store.s3Bucket}
-                    onChange={v => store.s3Bucket = v}
+                    setting="s3Bucket"
                     placeholder="my-bucket"
                 />
-                <SettingTextInput
+                <BoundTextInput
                     name="Region"
                     description="AWS region or auto for Cloudflare R2"
-                    value={store.s3Region}
-                    onChange={v => store.s3Region = v}
+                    setting="s3Region"
                     placeholder="auto"
                 />
-                <SettingTextInput
+                <BoundTextInput
                     name="Access Key ID"
                     description="S3-compatible access key"
-                    value={store.s3AccessKeyId}
-                    onChange={v => store.s3AccessKeyId = v}
+                    setting="s3AccessKeyId"
                     placeholder="Your access key ID"
                     secret
                 />
-                <SettingTextInput
+                <BoundTextInput
                     name="Secret Access Key"
                     description="S3-compatible secret key"
-                    value={store.s3SecretAccessKey}
-                    onChange={v => store.s3SecretAccessKey = v}
+                    setting="s3SecretAccessKey"
                     placeholder="Your secret access key"
                     secret
                 />
-                <SettingTextInput
+                <BoundTextInput
                     name="Session Token"
                     description="Optional temporary credential token"
-                    value={store.s3SessionToken}
-                    onChange={v => store.s3SessionToken = v}
+                    setting="s3SessionToken"
                     placeholder="Optional session token"
                     secret
                 />
-                <SettingTextInput
+                <BoundTextInput
                     name="Public Base URL"
                     description="Optional public URL base to use for returned links"
-                    value={store.s3PublicUrl}
-                    onChange={v => { store.s3PublicUrl = v; update(); }}
+                    setting="s3PublicUrl"
+                    update={update}
                     placeholder="https://cdn.example.com"
                     validate={linkBaseProblem}
                 />
@@ -2174,18 +2037,16 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
                         <div className={cl("host-note")}>{s3AnonymousReadText(store.s3Endpoint)}</div>
                     </Sub>
                 )}
-                <SettingTextInput
+                <BoundTextInput
                     name="Object Key Prefix"
                     description="Optional folder/prefix inside the bucket"
-                    value={store.s3Prefix}
-                    onChange={v => store.s3Prefix = v}
+                    setting="s3Prefix"
                     placeholder="uploads/discord"
                 />
-                <SettingSwitch
+                <BoundSwitch
                     name="Use Path-Style Endpoint"
                     description="Use endpoint/bucket/key format, recommended for R2."
-                    checked={store.s3ForcePathStyle}
-                    onChange={v => store.s3ForcePathStyle = v}
+                    setting="s3ForcePathStyle"
                 />
                 {vis.s3DottedBucketNote && (
                     <Sub>
@@ -2203,11 +2064,10 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
             <SettingGroup name="Catbox" description="Optional. Uploads with your userhash go to your Catbox account.">
                 {note}
                 {credentialWarning}
-                <SettingTextInput
+                <BoundTextInput
                     name="Catbox Userhash"
                     description="Leave empty for anonymous uploads."
-                    value={store.catboxUserhash}
-                    onChange={v => store.catboxUserhash = v}
+                    setting="catboxUserhash"
                     placeholder="Your Catbox userhash"
                     secret
                 />
@@ -2243,14 +2103,11 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
         );
         case ServiceType.ZEROX0: return vis.zeroX0Options ? (
             <SettingGroup name="0x0.st" description="Anyone with a link can open the file.">
-                <SettingSwitch
+                <BoundSwitch
                     name="Hard-to-Guess Links"
                     description="Ask 0x0.st for longer links that can't be guessed."
-                    checked={store.zeroX0Secret}
-                    onChange={v => {
-                        store.zeroX0Secret = v;
-                        update();
-                    }}
+                    setting="zeroX0Secret"
+                    update={update}
                 />
                 <SettingsSection id="zerox0-expiry" name="Delete After" description="0x0.st deletes the file by this time at the latest.">
                     <Select
@@ -2284,24 +2141,21 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
         case ServiceType.GOFILE: return (
             <SettingGroup name="GoFile" description="Optional. Uploads with your token go to your GoFile account.">
                 {note}
-                <SettingTextInput
+                <BoundTextInput
                     name="GoFile Token"
                     description="Leave empty for anonymous uploads."
-                    value={store.gofileToken}
-                    onChange={v => { store.gofileToken = v; update(); }}
+                    setting="gofileToken"
+                    update={update}
                     placeholder="Optional GoFile token"
                     secret
                 />
                 {vis.gofileGuestReuse && (
                     <Sub>
-                        <SettingSwitch
+                        <BoundSwitch
                             name="Reuse One Guest Account"
                             description="Reuse one guest account for anonymous uploads instead of a new one each time. Those uploads are then linked to each other."
-                            checked={store.gofileReuseGuestToken}
-                            onChange={v => {
-                                store.gofileReuseGuestToken = v;
-                                update();
-                            }}
+                            setting="gofileReuseGuestToken"
+                            update={update}
                         />
                         {vis.gofileGuestSync && (
                             <SettingSwitch
@@ -2332,11 +2186,10 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
             <SettingGroup name="PixelVault" description={"Connection details for PixelVault uploads."}>
                 {note}
                 {credentialWarning}
-                <SettingTextInput
+                <BoundTextInput
                     name="PixelVault Upload Key"
                     description="Your PixelVault authorization key."
-                    value={store.pixelVaultKey}
-                    onChange={v => store.pixelVaultKey = v}
+                    setting="pixelVaultKey"
                     placeholder="Your PixelVault upload key"
                     secret
                 />
@@ -2346,11 +2199,10 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
             <SettingGroup name="PixelDrain" description="PixelDrain needs an API key.">
                 {note}
                 {credentialWarning}
-                <SettingTextInput
+                <BoundTextInput
                     name="PixelDrain API Key"
                     description="From pixeldrain.com/user/api_keys."
-                    value={store.pixelDrainKey}
-                    onChange={v => store.pixelDrainKey = v}
+                    setting="pixelDrainKey"
                     placeholder="Your PixelDrain API key"
                     secret
                 />
@@ -2362,35 +2214,32 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
                 {note}
                 {wrapNote}
                 {credentialWarning}
-                <SettingTextInput
+                <BoundTextInput
                     name="Server URL"
                     description="Base WebDAV URL (e.g. https://nextcloud.example.com/remote.php/dav/files/username)"
-                    value={store.webdavUrl}
-                    onChange={v => { store.webdavUrl = v; update(); }}
+                    setting="webdavUrl"
+                    update={update}
                     placeholder="https://nextcloud.example.com/remote.php/dav/files/username"
                     validate={v => endpointUrlProblem(v, httpRule(ServiceType.WEBDAV, rows))}
                 />
                 <InsecureHttpSettings service={ServiceType.WEBDAV} url={store.webdavUrl} rows={rows} />
-                <SettingTextInput
+                <BoundTextInput
                     name="Username"
                     description="WebDAV username"
-                    value={store.webdavUsername}
-                    onChange={v => store.webdavUsername = v}
+                    setting="webdavUsername"
                     placeholder="username"
                 />
-                <SettingTextInput
+                <BoundTextInput
                     name="Password or App Token"
                     description="WebDAV password or app token"
-                    value={store.webdavPassword}
-                    onChange={v => store.webdavPassword = v}
+                    setting="webdavPassword"
                     placeholder="password or app token"
                     secret
                 />
-                <SettingTextInput
+                <BoundTextInput
                     name="Upload Directory"
                     description="Optional subdirectory on the server to upload into (e.g. uploads)"
-                    value={store.webdavDirectory}
-                    onChange={v => store.webdavDirectory = v}
+                    setting="webdavDirectory"
                     placeholder="Leave empty for root directory"
                 />
                 <SettingsSection id="server-type" name="Server Type" description="Nextcloud and ownCloud create a public share link. Generic posts the file's own URL, as does any URL without /remote.php/.">
@@ -2438,60 +2287,56 @@ function UploadBehaviorGroup({ update }: { update: () => void; }) {
 
     return (
         <SettingGroup name="Upload Behavior" description="What happens to uploads and their links.">
-            <SettingSwitch
+            <BoundSwitch
                 name="Insert URL into Chatbox"
                 description="Insert the link into the chatbox."
-                checked={store.autoSend}
-                onChange={v => { store.autoSend = v; update(); }}
+                setting="autoSend"
+                update={update}
             />
             {vis.sendImmediately && (
                 <Sub>
-                    <SettingSwitch
+                    <BoundSwitch
                         name="Send Immediately"
                         description="Send the link as its own message. Forum posts, new threads and right-click uploads still insert it."
-                        checked={Boolean(store.sendImmediately)}
-                        onChange={v => store.sendImmediately = v}
+                        setting="sendImmediately"
                     />
                 </Sub>
             )}
 
-            <SettingSwitch
+            <BoundSwitch
                 name="Copy URL to Clipboard"
                 description="Copy the link to the clipboard."
-                checked={store.autoCopy}
-                onChange={v => store.autoCopy = v}
+                setting="autoCopy"
             />
 
-            <SettingSwitch
+            <BoundSwitch
                 name="Link as Filename"
                 description="Insert the link as clickable text showing the file name. Copied links stay plain."
-                checked={Boolean(store.displayOriginalFilename)}
-                onChange={v => { store.displayOriginalFilename = v; update(); }}
+                setting="displayOriginalFilename"
+                update={update}
             />
 
             {vis.preventEmbeds && (
                 <Sub>
-                    <SettingSwitch
+                    <BoundSwitch
                         name="Prevent Discord Embeds"
                         description="Wrap inserted links in angle brackets so Discord doesn't embed them."
-                        checked={store.autoFormat}
-                        onChange={v => { store.autoFormat = v; update(); }}
+                        setting="autoFormat"
+                        update={update}
                     />
                 </Sub>
             )}
 
-            <SettingSwitch
+            <BoundSwitch
                 name="Convert APNG to GIF"
                 description="Convert animated PNGs to GIF before uploading."
-                checked={store.apngToGif}
-                onChange={v => store.apngToGif = v}
+                setting="apngToGif"
             />
 
-            <SettingSwitch
+            <BoundSwitch
                 name="Preserve Original Filename"
                 description="Keep the original file name where the host allows it."
-                checked={Boolean(store.preserveOriginalFilename)}
-                onChange={v => store.preserveOriginalFilename = v}
+                setting="preserveOriginalFilename"
             />
 
             <SettingSwitch
@@ -2540,37 +2385,34 @@ function DiscordIntegrationGroup({ update }: { update: () => void; }) {
 
     return (
         <SettingGroup name="Discord Integration" description="When BigFileUpload takes over Discord's file handling.">
-            <SettingSwitch
+            <BoundSwitch
                 name="Bypass Discord Upload Button"
                 description="Take files added with the upload button."
-                checked={Boolean(store.bypassDiscordUpload)}
-                onChange={v => { store.bypassDiscordUpload = v; update(); }}
+                setting="bypassDiscordUpload"
+                update={update}
             />
 
-            <SettingSwitch
+            <BoundSwitch
                 name="Bypass Drag & Drop"
                 description="Take files dropped into the chatbox."
-                checked={Boolean(store.bypassDragDrop)}
-                onChange={v => { store.bypassDragDrop = v; update(); }}
+                setting="bypassDragDrop"
+                update={update}
             />
 
-            <SettingSwitch
+            <BoundSwitch
                 name="Bypass Pasted Files"
                 description="Take files pasted into the chatbox."
-                checked={store.autoUploadPastedFiles}
-                onChange={v => { store.autoUploadPastedFiles = v; update(); }}
+                setting="autoUploadPastedFiles"
+                update={update}
             />
 
             {vis.respectLimit && (
                 <>
-                    <SettingSwitch
+                    <BoundSwitch
                         name="Respect Discord File Size Limit"
                         description="Only take files Discord would reject (20 MB free, 50 MB Nitro Basic, 500 MB to 1 GB Nitro, boosts included). Off: take every file."
-                        checked={store.bypassDiscordUploadOnlyOverLimit}
-                        onChange={v => {
-                            store.bypassDiscordUploadOnlyOverLimit = v;
-                            update();
-                        }}
+                        setting="bypassDiscordUploadOnlyOverLimit"
+                        update={update}
                     />
 
                     {(vis.manualLimit || vis.uploadWholeBatch || vis.skipDiscordGenerated) && (
@@ -2578,20 +2420,18 @@ function DiscordIntegrationGroup({ update }: { update: () => void; }) {
                             {vis.manualLimit && <ManualLimitInput />}
 
                             {vis.uploadWholeBatch && (
-                                <SettingSwitch
+                                <BoundSwitch
                                     name="Upload Whole Batch Externally"
                                     description="If some files are over the limit, upload the whole batch. Off: only those files are uploaded."
-                                    checked={store.uploadWholeBatch}
-                                    onChange={v => store.uploadWholeBatch = v}
+                                    setting="uploadWholeBatch"
                                 />
                             )}
 
                             {vis.skipDiscordGenerated && (
-                                <SettingSwitch
+                                <BoundSwitch
                                     name="Skip Discord-Generated Files"
                                     description="Leave message.txt, text sent as a file and clip shares to Discord unless they're over the limit."
-                                    checked={store.skipDiscordGeneratedFiles}
-                                    onChange={v => store.skipDiscordGeneratedFiles = v}
+                                    setting="skipDiscordGeneratedFiles"
                                 />
                             )}
                         </Sub>
@@ -2599,14 +2439,11 @@ function DiscordIntegrationGroup({ update }: { update: () => void; }) {
                 </>
             )}
 
-            <SettingTextInput
+            <BoundTextInput
                 name="Allowed File Types"
                 description="Extensions to handle, like png,jpg,mp4. Put ! before one to exclude it (!exe,!zip). Leave empty to handle every file."
-                value={store.uploadAllowedFileTypes}
-                onChange={v => {
-                    store.uploadAllowedFileTypes = v;
-                    update();
-                }}
+                setting="uploadAllowedFileTypes"
+                update={update}
                 placeholder="png,jpg,mp4 or !exe,!zip"
             />
             {vis.allowedTypesSummary && <div className={cl("host-note")}>{fileTypeFilterSummary(parseFileTypeFilter(store.uploadAllowedFileTypes))}</div>}
@@ -2894,8 +2731,6 @@ export function pendingFallbackPreview(): ServiceType[] | null {
     return step.write || step.notice ? step.active : null;
 }
 
-
-
 export interface VisibilityStore {
     serviceType?: string;
     disableFallbacks?: boolean;
@@ -2923,11 +2758,7 @@ export interface VisibilityStore {
     [key: string]: unknown;
 }
 
-
-
 export type EmbedServiceChoice = "cors" | "autocompressor" | "x266";
-
-
 
 export interface HistoryFacts {
     id: string;
@@ -2936,11 +2767,7 @@ export interface HistoryFacts {
     problem: string | null;
 }
 
-
-
 export type HistoryRow = "delete" | "problem" | "anonymous" | "none";
-
-
 
 export interface VisibilityContext {
     store: VisibilityStore;
@@ -2975,33 +2802,6 @@ export interface VisibilityContext {
     history: readonly HistoryFacts[];
 }
 
-
-
-const STATIC_IDS = [
-    "needsProxyNote", "savedCredentials", "primaryFailureMode",
-    "encryptingHostTitle", "encryptingHostColor", "encryptingHostFakelink",
-    "s3SignPayload", "s3MultipartNote", "s3R2Note", "s3AnonymousReadNote", "s3DottedBucketNote",
-    "zeroX0Options", "gofileGuestReuse", "gofileGuestSync", "gofileGuestReset",
-    "sharexRawConfig", "sharexForm", "sharexInvalidConfig", "sharexFileFormName", "sharexArguments",
-    "webdavShareLinkFormat", "webdavGenericNote",
-    "preventEmbeds", "stripQueryMode", "sendImmediately",
-    "embedProxyService", "embedPendingNote", "embedSubstitutionNote", "embedX266Note", "embedScopeNote",
-    "embedPreventNote", "embedUseCustomProxy", "embedPrivateHosts", "embedSkipNative", "embedHealth",
-    "respectLimit", "manualLimit", "uploadWholeBatch", "skipDiscordGenerated", "allowedTypesSummary",
-    "nativeHelperWarning", "proxyDeclinedHere", "proxyInvalidNote",
-    "proxyOffCaption", "proxyCredentialWarning", "proxyRetryChoices", "insecureHttpChoices",
-    "pickerField", "pickerBlankNote", "pickerProblemNote", "pickerPrefixNote", "pickerRedirectTick",
-    "pickerVideoNote", "pickerAddressLine",
-    "fallbackOrder", "fallbackEmptyHint", "fallbackHosts",
-    "uploadHistory", "historyRemove", "clearHistory"
-] as const;
-
-
-
-export type VisibilityId = typeof STATIC_IDS[number];
-
-
-
 export interface HostRows {
     credentialWarning: boolean;
     privateWrapNote: boolean;
@@ -3010,26 +2810,13 @@ export interface HostRows {
     missingNote: boolean;
 }
 
-
-
 export interface SavedCredential {
     service: ServiceType;
     keys: string[];
     names: string[];
 }
 
-
-
-export interface Visibility extends Record<VisibilityId, boolean> {
-    fallbackSections: ServiceType[];
-    hostRows: Partial<Record<ServiceType, HostRows>>;
-    rowNote: Partial<Record<ServiceType, "credentials" | "platform">>;
-    unusedCredentials: SavedCredential[];
-    elsewhereCredentials: SavedCredential[];
-    historyRows: Record<string, HistoryRow>;
-}
-
-
+export type Visibility = ReturnType<typeof getVisibility>;
 
 export const HOSTS_WITH_OPTIONS: ReadonlySet<ServiceType> = new Set([
     ServiceType.ZIPLINE, ServiceType.EZHOST, ServiceType.NEST, ServiceType.ENCRYPTINGHOST, ServiceType.S3, ServiceType.CATBOX,
@@ -3037,11 +2824,7 @@ export const HOSTS_WITH_OPTIONS: ReadonlySet<ServiceType> = new Set([
     ServiceType.PIXELDRAIN, ServiceType.SHAREX, ServiceType.WEBDAV
 ]);
 
-
-
 export const PRIVATE_HOSTS: readonly ServiceType[] = [ServiceType.ZIPLINE, ServiceType.S3, ServiceType.WEBDAV, ServiceType.SHAREX];
-
-
 
 const HOST_SECRETS: Partial<Record<ServiceType, readonly (readonly [key: string, name: string])[]>> = {
     [ServiceType.ZIPLINE]: [["ziplineToken", "token"]],
@@ -3057,15 +2840,9 @@ const HOST_SECRETS: Partial<Record<ServiceType, readonly (readonly [key: string,
     [ServiceType.SHAREX]: [["sharexConfig", "config with credentials"]]
 };
 
-
-
 const INSECURE_HTTP_SECTIONS: ReadonlySet<ServiceType> = new Set([ServiceType.ZIPLINE, ServiceType.WEBDAV, ServiceType.SHAREX, ServiceType.S3]);
 
-
-
 const filled = (v: unknown) => typeof v === "string" && v.trim() !== "";
-
-
 
 function isHttpUrl(raw: unknown): raw is string {
     if (typeof raw !== "string") return false;
@@ -3073,15 +2850,11 @@ function isHttpUrl(raw: unknown): raw is string {
     return URL.canParse(value) && new URL(value).protocol === "http:";
 }
 
-
-
 function isHttpsUrl(raw: unknown): boolean {
     if (typeof raw !== "string") return false;
     const value = raw.trim();
     return URL.canParse(value) && new URL(value).protocol === "https:";
 }
-
-
 
 function hostUrl(ctx: VisibilityContext, service: ServiceType): string | undefined {
     const { store } = ctx;
@@ -3094,9 +2867,7 @@ function hostUrl(ctx: VisibilityContext, service: ServiceType): string | undefin
     }
 }
 
-
-
-export function getVisibility(ctx: VisibilityContext): Visibility {
+export function getVisibility(ctx: VisibilityContext) {
     const { store, picker } = ctx;
     const selected = store.serviceType as ServiceType;
     const fallbacksOn = !store.disableFallbacks;
@@ -3331,7 +3102,7 @@ export function hexColorProblem(raw: string): string | null {
 export function shareXRequestUrlProblem(raw: string, http?: HttpRule, config?: RequestValueOptions["config"]): string | null {
     let url: string;
     try {
-        url = resolveShareXRequestValue(trimmed(raw), "file", { config, urlEncode: true, field: "RequestURL" });
+        url = previewShareXRequestValue(trimmed(raw), "file", { config, urlEncode: true, field: "RequestURL" });
     } catch (error) {
         return (error as Error).message;
     }

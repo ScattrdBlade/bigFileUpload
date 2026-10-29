@@ -545,17 +545,6 @@ export function isProxiedThrough(url: string, corsProxyUrl: string): boolean {
     return lower.startsWith(`${base}?url=`) || lower.startsWith(`${base}/?url=`);
 }
 
-export function proxyRedactionTokens(url: string | undefined): string[] {
-    const u = proxyBaseUrl(url);
-    if (!u) return [];
-    const value = url!.trim();
-    const prefix = templatePrefix(value);
-    const tokens = prefix != null
-        ? [prefix, u.host + u.pathname, u.host, u.hostname]
-        : [u.origin + u.pathname.replace(/\/+$/, ""), proxyKey(value)!, u.host, u.hostname];
-    return [...new Set(tokens)].sort((a, b) => b.length - a.length);
-}
-
 export const TRACKING_QUERY_KEYS: ReadonlySet<string> = new Set([
     "fbclid", "gclid", "dclid", "gbraid", "wbraid", "msclkid", "yclid", "twclid", "ttclid",
     "igshid", "mc_cid", "mc_eid", "_hsenc", "_hsmi", "mkt_tok", "si"
@@ -832,40 +821,51 @@ const REGEX_INPUT_MAX = 256 * 1024;
 
 const REGEX_PATTERN_MAX = 1000;
 
-function hasNestedQuantifier(pattern: string): boolean {
-    const groups: boolean[] = [];
-    let closedRepeats = false;
-    let inClass = false;
-    for (let i = 0; i < pattern.length; i++) {
-        const c = pattern[i];
-        if (c === "\\") {
-            i++;
-            closedRepeats = false;
-        } else if (inClass) {
-            if (c === "]") inClass = false;
-        } else if (c === "[") {
-            inClass = true;
-            closedRepeats = false;
-        } else if (c === "(") {
-            groups.push(false);
-            closedRepeats = false;
-        } else if (c === ")") {
-            closedRepeats = groups.pop() ?? false;
-            if (closedRepeats && groups.length) groups[groups.length - 1] = true;
-        } else if (c === "+" || c === "*" || (c === "{" && /^\{\d+,\d*\}/.test(pattern.slice(i, i + 24)))) {
-            if (closedRepeats) return true;
-            if (groups.length) groups[groups.length - 1] = true;
-        } else if (c !== "?") {
-            closedRepeats = false;
-        }
-    }
-    return false;
+function regexProblem(pattern: string): string | null {
+    return pattern.length > REGEX_PATTERN_MAX ? `whose pattern is longer than ${REGEX_PATTERN_MAX} characters` : null;
 }
 
-function regexProblem(pattern: string): string | null {
-    if (pattern.length > REGEX_PATTERN_MAX) return `whose pattern is longer than ${REGEX_PATTERN_MAX} characters`;
-    if (hasNestedQuantifier(pattern)) return "whose pattern repeats a group that already repeats (like (a+)+), which can freeze Discord";
-    return null;
+function matchInWorker(input: string, pattern: string, group: string): Promise<string | null> {
+    return new Promise((resolve, reject) => {
+        let worker: Worker | undefined;
+        let url: string | undefined;
+        let settled = false;
+        const finish = (error: string | null, value: string | null = null) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            worker?.terminate();
+            if (url) URL.revokeObjectURL(url);
+            if (error) reject(new Error(error));
+            else resolve(value);
+        };
+        const timer = setTimeout(() => finish("ShareX regex exceeded its one-second limit"), 1000);
+        try {
+            url = URL.createObjectURL(new Blob([`
+                onmessage = ({ data: { input, pattern, group } }) => {
+                    try {
+                        const options = /^\\(\\?([ims]+)\\)/.exec(pattern);
+                        const regex = new RegExp(options ? pattern.slice(options[0].length) : pattern, options ? [...new Set(options[1])].join("") : "");
+                        const match = regex.exec(input);
+                        const value = !match ? null : !group ? match[0] : /^\\d+$/.test(group) ? match[Number(group)] ?? "" : match.groups?.[group] ?? "";
+                        postMessage({ value });
+                    } catch {
+                        postMessage({ error: "ShareX regex couldn't be evaluated" });
+                    }
+                };
+            `], { type: "text/javascript" }));
+            worker = new Worker(url);
+            worker.onmessage = ({ data }) => finish(data.error ?? null, data.value);
+            worker.onerror = event => {
+                event.preventDefault();
+                finish("ShareX regex worker failed. Check that this client allows blob workers");
+            };
+            worker.onmessageerror = () => finish("ShareX regex worker returned an unreadable result");
+            worker.postMessage({ input: input.slice(0, REGEX_INPUT_MAX), pattern, group });
+        } catch {
+            finish("ShareX regex needs a worker, but this client couldn't start one");
+        }
+    });
 }
 
 function toRegExp(pattern: string): RegExp {
@@ -965,16 +965,7 @@ function callFunction({ name, args: rawArgs }: Call, ctx: Context): string | nul
             const [input, xpath] = args.length > 1 ? args : [answer!.text, args[0]];
             return input && xpath ? readXml(input, xpath) : null;
         }
-        case "regex": {
-            const [input, pattern, group] = args.length > 2 ? args : [answer!.text, args[0], args[1]];
-            if (!input || !pattern) return null;
-            const problem = regexProblem(pattern);
-            if (problem) throw new Error(`ShareX ${ctx.field} uses "{regex}", ${problem}`);
-            const match = toRegExp(pattern).exec(input.length > REGEX_INPUT_MAX ? input.slice(0, REGEX_INPUT_MAX) : input);
-            if (!match) return null;
-            if (!group) return match[0];
-            return /^\d+$/.test(group) ? match[Number(group)] ?? "" : match.groups?.[group] ?? "";
-        }
+        case "regex": return "preview";
         case "filename": return ctx.urlEncode ? encodeURIComponent(ctx.filename) : ctx.filename;
         case "random": return args[Math.floor(Math.random() * args.length)];
         case "base64": return args[0] ? toBase64(args[0]) : null;
@@ -985,6 +976,29 @@ function callFunction({ name, args: rawArgs }: Call, ctx: Context): string | nul
 function evaluate(template: Template, ctx: Context): string {
     let out = "";
     for (const part of template) out += typeof part === "string" ? part : callFunction(part, ctx) ?? "";
+    return out;
+}
+
+async function evaluateAsync(template: Template, ctx: Context, deadline = Date.now() + 5000): Promise<string> {
+    let out = "";
+    for (const part of template) {
+        if (Date.now() >= deadline) throw new Error(`ShareX ${ctx.field} exceeded its five-second evaluation limit`);
+        if (typeof part === "string") {
+            out += part;
+            continue;
+        }
+        const args: string[] = [];
+        for (const arg of part.args ?? []) args.push(await evaluateAsync(arg, ctx, deadline));
+        if (part.name === "regex") {
+            if (!ctx.answer && args.length < 3) throw new Error(`ShareX ${ctx.field}: "{regex}" reads the host's answer`);
+            const [input, pattern, group] = args.length > 2 ? args : [ctx.answer!.text, args[0], args[1]];
+            const problem = pattern ? regexProblem(pattern) : null;
+            if (problem) throw new Error(`ShareX ${ctx.field} uses "{regex}", ${problem}`);
+            out += input && pattern ? await matchInWorker(input, pattern, group) ?? "" : "";
+        } else {
+            out += callFunction({ ...part, args: args.map(arg => [arg]) }, ctx) ?? "";
+        }
+    }
     return out;
 }
 
@@ -1044,8 +1058,12 @@ export interface RequestValueOptions {
     field?: string;
 }
 
-export function resolveShareXRequestValue(value: string | number | boolean, filename: string, { config, urlEncode = false, field = "value" }: RequestValueOptions = {}): string {
+export function previewShareXRequestValue(value: string | number | boolean, filename: string, { config, urlEncode = false, field = "value" }: RequestValueOptions = {}): string {
     return evaluate(compileField(value, field, config), { field, filename, urlEncode, answer: null });
+}
+
+export async function resolveShareXRequestValue(value: string | number | boolean, filename: string, { config, urlEncode = false, field = "value" }: RequestValueOptions = {}): Promise<string> {
+    return evaluateAsync(compileField(value, field, config), { field, filename, urlEncode, answer: null });
 }
 
 // fetch, XHR and Node accept only Latin-1 header values
@@ -1059,18 +1077,22 @@ function encodeHeaderValue(value: string): string {
     });
 }
 
-export function buildShareXHeaders(config: ShareXUploaderConfig, filename: string): Record<string, string> {
+function checkedShareXHeader(key: string, raw: string): string {
+    if (!HEADER_NAME_REGEX.test(key)) throw new Error(`ShareX header "${key}" has an invalid name`);
+    const value = encodeHeaderValue(raw);
+    try {
+        if (/[\x00-\x08\x0a-\x1f\x7f]/.test(value)) throw new Error();
+        new Headers().set(key, value);
+    } catch {
+        throw new Error(`ShareX header "${key}" has an invalid value`);
+    }
+    return value;
+}
+
+export async function buildShareXHeaders(config: ShareXUploaderConfig, filename: string): Promise<Record<string, string>> {
     const headers: Record<string, string> = {};
     for (const [key, raw] of Object.entries(config.Headers || {})) {
-        if (!HEADER_NAME_REGEX.test(key)) throw new Error(`ShareX header "${key}" has an invalid name`);
-        const value = encodeHeaderValue(resolveShareXRequestValue(raw, filename, { config, field: `Headers.${key}` }));
-        try {
-            if (/[\x00-\x08\x0a-\x1f\x7f]/.test(value)) throw new Error();
-            new Headers().set(key, value);
-        } catch {
-            throw new Error(`ShareX header "${key}" has an invalid value`);
-        }
-        headers[key] = value;
+        headers[key] = checkedShareXHeader(key, await resolveShareXRequestValue(raw, filename, { config, field: `Headers.${key}` }));
     }
     return headers;
 }
@@ -1089,7 +1111,9 @@ export function validateShareXConfig(config: ShareXUploaderConfig): void {
         checkTemplate(template, field, side);
         if (side === "address") checkAddressPrefix(template, field);
     }
-    buildShareXHeaders(config, "upload.png");
+    for (const [key, raw] of Object.entries(config.Headers ?? {})) {
+        checkedShareXHeader(key, previewShareXRequestValue(raw, "upload.png", { config, field: `Headers.${key}` }));
+    }
 }
 
 interface AnswerOptions {
@@ -1100,18 +1124,18 @@ interface AnswerOptions {
     field?: string;
 }
 
-export function resolveShareXTemplate(
+export async function resolveShareXTemplate(
     template: string | undefined,
     responseText: string,
     responseJson: unknown,
     { config, url, headers, filename = "", field = "URL" }: AnswerOptions = {}
-): string | undefined {
+): Promise<string | undefined> {
     if (!template) return undefined;
 
     const output = template.trim();
     if (!output) return undefined;
 
-    return evaluate(compileField(output, field, config), { field, filename, urlEncode: true, answer: { text: responseText, json: responseJson, url, headers } });
+    return evaluateAsync(compileField(output, field, config), { field, filename, urlEncode: true, answer: { text: responseText, json: responseJson, url, headers } });
 }
 
 export function shareXSecretParts(config: ShareXUploaderConfig, skipHeader: (name: string) => boolean = () => false): string[] {
@@ -1127,7 +1151,7 @@ export function shareXSecretParts(config: ShareXUploaderConfig, skipHeader: (nam
         if (call.name === "base64" && call.args?.[0] && literalOf(call.args[0])) found.push(toBase64(literalOf(call.args[0])!));
     };
     const varies = (template: Template): boolean => template.some(part => typeof part !== "string"
-        && (part.name === "filename" || part.name === "random" || (part.args ?? []).some(varies)));
+        && (part.name === "filename" || part.name === "random" || part.name === "regex" || (part.args ?? []).some(varies)));
     for (const [field, value] of requestFields(config)) {
         if (field.startsWith("Headers.") && skipHeader(field.slice(8))) continue;
         try {
