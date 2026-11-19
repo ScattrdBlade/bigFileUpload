@@ -4022,6 +4022,7 @@ function judgeFailure(service: ServiceType, error: unknown, stalled: boolean): F
     if (stalled || transport?.kind === "timeout") return moveOn;
     if (transport) return transport.unsent && !wasRerouted ? verdict(true, wait(1000), s => `Couldn't reach ${label}, retrying in ${s}s...`) : moveOn;
     if (status === 429 || error instanceof RateLimitError) return verdict(false, wait(retryAfterMs(retryAfter) ?? 5000), s => `Rate-limited by ${label}, retrying in ${s}s...`);
+    if (service === ServiceType.ZEROX0 && status === 503 && error instanceof Error && /uploads disabled/i.test(error.message)) return moveOn;
     if (status && status >= 500 && status < 600) return verdict(true, wait(retryAfterMs(retryAfter) ?? 2000), s => `${label} answered ${status}, retrying in ${s}s...`);
     return null;
 }

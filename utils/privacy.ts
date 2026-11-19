@@ -202,7 +202,8 @@ export function describeHttpFailure(service: ServiceType | null, status: number,
     const body = redactCapped(text, secrets);
     if (body.trim()) logger.debug(`${service ? serviceLabel(service) : "The host"} answered ${status}:`, body);
     const summary = redactSecrets(summarizeBody(body, contentType), secrets);
-    return summary ? `${status} ${summary}` : String(status);
+    if (!summary) return String(status);
+    return summary.startsWith(`${status} `) ? summary : `${status} ${summary}`;
 }
 
 const KEY = "BigFileUpload_uploadHistory";
