@@ -764,7 +764,7 @@ export default definePlugin({
         {
             find: "#{intl::MESSAGE_ACTIONS_MENU_LABEL}),shouldHideMediaOptions:",
             replacement: {
-                match: /favoriteableType:\i,(?<=(\i)\.getAttribute\("data-type"\).+?)/,
+                match: /favoriteableType:\i,(?=[^{}]*?\),shouldHideMediaOptions:)(?<=(\i)\.getAttribute\("data-type"\).+?)/,
                 replace: "$&target:$1,"
             }
         },
