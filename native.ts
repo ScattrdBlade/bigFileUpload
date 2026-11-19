@@ -86,22 +86,14 @@ export async function requestOriginApproval(e: IpcMainInvokeEvent, url: string):
 }
 
 export async function listApprovedOrigins(): Promise<string[]> {
-    try {
-        return trustedOrigins();
-    } catch {
-        return [];
-    }
+    return trustedOrigins();
 }
 
 export async function forgetApprovedOrigins(): Promise<boolean> {
     sessionOrigins.clear();
-    try {
-        const plugin = NativeSettings.store.plugins.BigFileUpload;
-        if (plugin && "approvedOrigins" in plugin) delete plugin.approvedOrigins;
-        return true;
-    } catch {
-        return false;
-    }
+    const plugin = NativeSettings.store.plugins.BigFileUpload;
+    if (plugin && "approvedOrigins" in plugin) delete plugin.approvedOrigins;
+    return true;
 }
 
 let transferOwner: number | null = null;
@@ -713,7 +705,6 @@ async function readResponseText(response: Response, { max = MAX_RESPONSE_BYTES, 
             const room = max - received;
             if (value.length > room) {
                 text += decoder.decode(value.subarray(0, room));
-                await reader.cancel().catch(() => { });
                 return { text, truncated: true };
             }
             received += value.length;
@@ -728,7 +719,7 @@ async function readResponseText(response: Response, { max = MAX_RESPONSE_BYTES, 
     }
 }
 
-function multipartFetch(url: string, fields: Record<string, string>, fileFieldName: string, file: BodyPart, filename: string, headers: Record<string, string> = {}, fileContentType = "application/octet-stream", method = "POST", insecureOrigin?: string, viaProxy = false): Promise<Response> {
+function multipartFetch(url: string, fields: Record<string, string>, fileFieldName: string, file: BodyPart, filename: string, headers: Record<string, string>, fileContentType: string | undefined, method: string, insecureOrigin?: string, viaProxy = false): Promise<Response> {
     const boundary = `----BigFileUpload${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
     const encoder = new TextEncoder();
     const escapeName = (value: string) => value.replace(/["\r\n]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
@@ -743,18 +734,7 @@ function multipartFetch(url: string, fields: Record<string, string>, fileFieldNa
     return streamFetch(url, method, headers, parts, `multipart/form-data; boundary=${boundary}`, insecureOrigin, viaProxy);
 }
 
-function rawFetch(url: string, method: string, file: BodyPart, headers: Record<string, string> = {}, insecureOrigin?: string, viaProxy = false): Promise<Response> {
-    return streamFetch(url, method, headers, [file], undefined, insecureOrigin, viaProxy);
-}
-
-function isValidHttpsUrl(url: string): boolean {
-    try {
-        const parsed = new URL(url);
-        return parsed.protocol === "https:";
-    } catch {
-        return false;
-    }
-}
+const isValidHttpsUrl = (url: string) => URL.canParse(url) && new URL(url).protocol === "https:";
 
 function isPublicSourceUrl(url: string): boolean {
     if (!isValidHttpsUrl(url)) return false;
@@ -850,12 +830,11 @@ export interface CustomUploadResponse {
     cancelled?: true;
     failure?: UploadFailure;
     block?: true;
-    server?: string;
     remoteAddress?: string;
 }
 
 const isSpoolSource = (body: unknown): body is SpoolSource =>
-    typeof body === "object" && body !== null && !ArrayBuffer.isView(body) && !(body instanceof ArrayBuffer) && (body as SpoolSource).kind === "spool";
+    typeof body === "object" && body !== null && (body as SpoolSource).kind === "spool";
 
 function requestBody(e: IpcMainInvokeEvent, body: ArrayBuffer | ArrayBufferView | SpoolSource | null | undefined): BodyPart | string {
     if (!isSpoolSource(body)) return body ? asBytes(body) : new Uint8Array(0);
@@ -920,7 +899,7 @@ async function performCustomUploadRequest(
             if (fileContentType && !hasHeader("content-type")) {
                 binaryHeaders["Content-Type"] = fileContentType;
             }
-            response = await rawFetch(url, method, file, binaryHeaders, insecureOrigin, viaProxy);
+            response = await streamFetch(url, method, binaryHeaders, [file], undefined, insecureOrigin, viaProxy);
         } else if (bodyType === "json") {
             const payload = new TextEncoder().encode(JSON.stringify(fields));
             const jsonHeaders = { ...headers };
@@ -933,20 +912,16 @@ async function performCustomUploadRequest(
         }
 
         const { text, truncated } = await readResponseText(response);
-        const server = response.headers.get("server")?.slice(0, 100);
         const address = remoteAddress as string | undefined;
         return {
             success: true,
             status: response.status,
             statusText: response.statusText,
             contentType: response.headers.get("content-type") || "",
-            retryAfter: response.headers.get("retry-after") ?? undefined,
-            etag: response.headers.get("etag") ?? undefined,
             headers: [...response.headers].slice(0, MAX_RESPONSE_HEADERS),
             url: response.url || undefined,
             ...truncated && { responseTruncated: true as const },
             ...classifyHttpBlock(response.status, name => response.headers.get(name), text.slice(0, 8192)) && { block: true as const },
-            ...server && { server },
             ...address && { remoteAddress: address },
             responseText: text
         };
@@ -978,6 +953,18 @@ async function performCustomUploadRequest(
     }
 }
 
+async function timed<T>(ms: number, fail: (error: string) => T, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+        return await run(controller.signal);
+    } catch (e) {
+        return fail(controller.signal.aborted ? `No answer within ${ms / 1000} s` : describeNetworkError(e).error);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 const CLEANUP_TIMEOUT_MS = 15000;
 
 export interface CleanupRequestOptions {
@@ -987,24 +974,20 @@ export interface CleanupRequestOptions {
     insecureOrigin?: string;
 }
 
-export async function cleanupRequest(_: IpcMainInvokeEvent, options: CleanupRequestOptions): Promise<{ success: boolean; status?: number; error?: string; code?: "approval"; }> {
+type CleanupResult = { success: boolean; status?: number; error?: string; code?: "approval"; };
+
+export async function cleanupRequest(_: IpcMainInvokeEvent, options: CleanupRequestOptions): Promise<CleanupResult> {
     const { url, method, headers = {}, insecureOrigin } = options ?? {};
     if (typeof url !== "string") return { success: false, error: UPLOAD_URL_RULE };
     if (method !== "DELETE") return { success: false, error: "Only DELETE is supported" };
     if (unapproved(url)) return { success: false, code: "approval", error: APPROVAL_TEXT };
     const problem = await uploadUrlProblem(url, insecureOrigin);
     if (problem) return { success: false, error: problem.error ?? describeNetworkError(problem.lookupError).error };
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), CLEANUP_TIMEOUT_MS);
-    try {
-        const response = await fetch(url, { method, headers, redirect: "manual", signal: controller.signal });
+    return timed<CleanupResult>(CLEANUP_TIMEOUT_MS, error => ({ success: false, error }), async signal => {
+        const response = await fetch(url, { method, headers, redirect: "manual", signal });
         await response.body?.cancel().catch(() => { });
         return { success: true, status: response.status };
-    } catch (e) {
-        return { success: false, error: controller.signal.aborted ? `No answer within ${CLEANUP_TIMEOUT_MS / 1000} s` : describeNetworkError(e).error };
-    } finally {
-        clearTimeout(timer);
-    }
+    });
 }
 
 const MAX_DELETE_ANSWER = 16 * 1024;
@@ -1017,57 +1000,46 @@ export interface DeleteRequestOptions {
     publicOnly?: boolean;
 }
 
-export async function deleteRequest(_: IpcMainInvokeEvent, options: DeleteRequestOptions): Promise<{ success: boolean; status?: number; body?: string; error?: string; code?: "approval"; }> {
+export async function deleteRequest(_: IpcMainInvokeEvent, options: DeleteRequestOptions): Promise<CleanupResult & { body?: string; }> {
     const { url, method, headers = {}, form, publicOnly } = options ?? {};
     if (typeof url !== "string") return { success: false, error: UPLOAD_URL_RULE };
     if (method !== "GET" && method !== "POST" && method !== "DELETE") return { success: false, error: "Only GET, POST and DELETE are supported" };
     if (publicOnly !== true && unapproved(url)) return { success: false, code: "approval", error: APPROVAL_TEXT };
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), CLEANUP_TIMEOUT_MS);
-    try {
+    return timed<CleanupResult & { body?: string; }>(CLEANUP_TIMEOUT_MS, error => ({ success: false, error }), async signal => {
         if (publicOnly !== true) {
             const problem = await uploadUrlProblem(url);
             if (problem) return { success: false, error: problem.error ?? describeNetworkError(problem.lookupError).error };
         }
         const body = method === "POST" && form && typeof form === "object" ? new URLSearchParams(form) : undefined;
         const options = { method, headers, body };
-        const opened = publicOnly === true ? await publicSourceResponse(url, controller.signal, options) : null;
+        const opened = publicOnly === true ? await publicSourceResponse(url, signal, options) : null;
         if (opened && "error" in opened) return { success: false, error: opened.error };
-        const response = opened?.response ?? await fetch(url, { ...options, redirect: "manual", signal: controller.signal });
+        const response = opened?.response ?? await fetch(url, { ...options, redirect: "manual", signal });
         return { success: true, status: response.status, body: await readResponseHead(response, MAX_DELETE_ANSWER) };
-    } catch (e) {
-        return { success: false, error: controller.signal.aborted ? `No answer within ${CLEANUP_TIMEOUT_MS / 1000} s` : describeNetworkError(e).error };
-    } finally {
-        clearTimeout(timer);
-    }
+    });
 }
 
 const PROBE_TIMEOUT_MS = 10000;
 
 const MAX_PROBE_BODY = 64 * 1024;
 
-export async function probeUrl(_: IpcMainInvokeEvent, url: string, method: "HEAD" | "GET" = "HEAD", userAgent?: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<{ ok: boolean; status?: number; contentType?: string; server?: string; body?: string; error?: string; }> {
+type ProbeResult = { ok: boolean; status?: number; contentType?: string; body?: string; error?: string; };
+
+export async function probeUrl(_: IpcMainInvokeEvent, url: string, method: "HEAD" | "GET" = "HEAD", userAgent?: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<ProbeResult> {
     if (typeof url !== "string" || !isValidHttpsUrl(url)) return { ok: false, error: "Only https URLs can be checked" };
     if (method !== "HEAD" && method !== "GET") return { ok: false, error: "Only HEAD and GET are supported" };
     const wait = typeof timeoutMs === "number" && Number.isFinite(timeoutMs) ? Math.min(Math.max(timeoutMs, 1000), PROBE_TIMEOUT_MS) : PROBE_TIMEOUT_MS;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), wait);
-    try {
+    return timed<ProbeResult>(wait, error => ({ ok: false, error }), async signal => {
         const headers: Record<string, string> = typeof userAgent === "string" && userAgent ? { "User-Agent": userAgent.slice(0, 200) } : {};
-        const response = await fetch(url, { method, headers, redirect: "manual", signal: controller.signal });
+        const response = await fetch(url, { method, headers, redirect: "manual", signal });
         const body = method === "GET" ? await readResponseHead(response, MAX_PROBE_BODY) : (await response.body?.cancel().catch(() => { }), undefined);
         return {
             ok: true,
             status: response.status,
             contentType: response.headers.get("content-type") ?? "",
-            server: response.headers.get("server")?.slice(0, 100) ?? "",
             ...body !== undefined && { body }
         };
-    } catch (e) {
-        return { ok: false, error: controller.signal.aborted ? `No answer within ${wait / 1000} s` : describeNetworkError(e).error };
-    } finally {
-        clearTimeout(timer);
-    }
+    });
 }
 
 function sourceUrlError(url: string): string | null {
@@ -1286,19 +1258,6 @@ function startSourceDownload(timeoutMs: number) {
 
 type SourceFailure = { success: false; error: string; code: NativeErrorCode; cancelled?: true; tooLarge?: true; size?: number; policy?: true; failure?: UploadFailure; block?: true; };
 
-function sourceLimit(maxBytes: unknown, cap: number): number {
-    return typeof maxBytes === "number" && Number.isSafeInteger(maxBytes) && maxBytes >= 0 ? Math.min(maxBytes, cap) : cap;
-}
-
-function tooLargeFailure(size: number, limit: number, cap: number, capText: string): SourceFailure {
-    return { success: false, code: "local", tooLarge: true, size, error: limit === cap ? capText : `The file is larger than any active upload host accepts (${size} bytes, limit ${limit})` };
-}
-
-function declaredLength(response: Response): number | undefined {
-    const declared = Number(response.headers.get("content-length") ?? NaN);
-    return Number.isSafeInteger(declared) && declared >= 0 ? declared : undefined;
-}
-
 function sourceFailure(e: unknown, download: ReturnType<typeof startSourceDownload>, responded: boolean): SourceFailure {
     if (abortLatch?.reason === "user") return { success: false, cancelled: true, code: "cancelled", error: "Upload cancelled by user" };
     if (download.stalled()) return { success: false, code: "stalled", error: `No download progress for ${duration(download.timeoutMs)}, so the download was stopped` };
@@ -1318,8 +1277,8 @@ async function downloadSource<T>(url: string, timeoutMs: number, maxBytes: numbe
     cap: number, capText: string, prepare: (declared: number | undefined, limit: number) => SourceSink<T> | Promise<SourceSink<T> | { error: string; }>): Promise<T | SourceFailure> {
     const refused = sourceUrlError(url);
     if (refused) return { success: false, code: "local", error: refused, policy: true };
-    const limit = sourceLimit(maxBytes, cap);
-    const tooLarge = (size: number) => tooLargeFailure(size, limit, cap, capText);
+    const limit = typeof maxBytes === "number" && Number.isSafeInteger(maxBytes) && maxBytes >= 0 ? Math.min(maxBytes, cap) : cap;
+    const tooLarge = (size: number): SourceFailure => ({ success: false, code: "local", tooLarge: true, size, error: limit === cap ? capText : `The file is larger than any active upload host accepts (${size} bytes, limit ${limit})` });
     const download = startSourceDownload(timeoutMs);
     let responded = false;
     let sink: SourceSink<T> | undefined;
@@ -1331,7 +1290,8 @@ async function downloadSource<T>(url: string, timeoutMs: number, maxBytes: numbe
         const { response } = opened;
         body = response.body;
         responded = true;
-        const declared = declaredLength(response);
+        const length = Number(response.headers.get("content-length") ?? NaN);
+        const declared = Number.isSafeInteger(length) && length >= 0 ? length : undefined;
         if (declared !== undefined && declared > limit) return tooLarge(declared);
         const prepared = await prepare(declared, limit);
         if ("error" in prepared) {
@@ -1404,16 +1364,10 @@ export async function fetchToSpool(...args: Parameters<typeof performFetchToSpoo
 async function performFetchToSpool(e: IpcMainInvokeEvent, url: string, timeoutMs = 300000, session = "", maxBytes?: number, viaProxy?: boolean): Promise<FetchToSpoolResult> {
     return downloadSource<FetchToSpoolResult>(url, timeoutMs, maxBytes, viaProxy, SPOOL_MAX_BYTES,
         `Files over ${gigabytes(SPOOL_MAX_BYTES)} can't be uploaded from the desktop app`, async (declared, limit) => {
+            const head = new Uint8Array(SPOOL_HEAD_BYTES);
             const created = await createSpool(e, declared || undefined, String(session), limit);
             if ("error" in created) return created;
             const { id, spool } = created;
-            let head: Uint8Array;
-            try {
-                head = new Uint8Array(SPOOL_HEAD_BYTES);
-            } catch (error) {
-                await releaseSpool(id);
-                throw error;
-            }
             let headLength = 0, roomFor = declared ? Infinity : 0;
             let retained = false;
             return {
@@ -1435,9 +1389,8 @@ async function performFetchToSpool(e: IpcMainInvokeEvent, url: string, timeoutMs
                 },
                 async finish(contentType, size) {
                     const sha256 = await completeSpool(spool);
-                    const result = { success: true as const, id, size, contentType, sha256, head: head.slice(0, headLength).buffer };
                     retained = true;
-                    return result;
+                    return { success: true as const, id, size, contentType, sha256, head: head.slice(0, headLength).buffer };
                 },
                 async close() {
                     if (!retained) await releaseSpool(id);

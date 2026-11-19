@@ -11,17 +11,14 @@ import ErrorBoundary from "@components/ErrorBoundary";
 import { openPluginModal } from "@components/settings/tabs";
 import { copyToClipboard } from "@utils/clipboard";
 import { classNameFactory } from "@utils/css";
-import { type ConfirmModal as ConfirmModalType } from "@vencord/discord-types";
-import { findByCodeLazy } from "@webpack";
-import { closeModal, Modal, openModal, React, showToast } from "@webpack/common";
+import { RenderModalProps } from "@vencord/discord-types";
+import { closeModal, ConfirmModal, Modal, openModal, React, showToast } from "@webpack/common";
 
-import { ProxyChoice, rememberCustomProxy, settings, takeVersionNotices } from "../settings";
+import { rememberCustomProxy, settings, takeVersionNotices } from "../settings";
 import { CORS_PROXY, describeProxy, directWebHostNames, isPresetProxy, isPublicProxyUrl, logger, normalizeCorsProxyUrl, PROXY_QUESTION_URL, proxyAddressText, proxyBodyLimit, proxyKey, serviceLabel, ServiceType } from "../types";
 import { deleteAction, isDeleting, useUploadHistory } from "./privacy";
-import { answerProxyHere, consentPending, initDeviceState, noticeProxyChange, openDeviceChannel, peekDeviceProxyAnswer, peekDeviceState, primeDeviceState, recordDismissal, redirectTickFor, sameAnswer, setDue, setPromptBusy, setProxyChangeNotifier, setRedirectTick, subscribeDeviceState } from "./proxy";
-import { formatSize, getEmbedProxyService, hasNativeHelper, hostRetention, noticeRoutingChange, webDeclineOutlook } from "./upload";
-
-export const ConfirmModal: ConfirmModalType = findByCodeLazy("confirmText:", "onCloseCallback:", "actionBarInput:");
+import { answerProxyHere, consentPending, getEmbedProxyService, initDeviceState, noticeProxyChange, openDeviceChannel, peekDeviceProxyAnswer, peekDeviceState, primeDeviceState, recordDismissal, redirectTickFor, sameAnswer, setDue, setPromptBusy, setProxyChangeNotifier, setRedirectTick, subscribeDeviceState } from "./proxy";
+import { formatSize, hasNativeHelper, hostRetention, noticeRoutingChange, webDeclineOutlook } from "./upload";
 
 export interface HostQuestion {
     title: string;
@@ -30,54 +27,64 @@ export interface HostQuestion {
     cancelText?: string;
 }
 
-function oneShot<T>() {
+let nextKey = 1;
+
+function openQuestion<T>(name: string, what: string, onFail: T, onDismiss: T, deferDismiss: boolean, render: (props: RenderModalProps, settle: (value: T) => void) => React.ReactNode) {
     let resolve: (value: T) => void;
     const answer = new Promise<T>(r => { resolve = r; });
     let done = false;
-    return { answer, settle: (value: T) => {
+    let broken = false;
+    const settle = (value: T) => {
         if (done) return;
         done = true;
         resolve(value);
-    } };
-}
-
-let nextKey = 1;
-
-export function askToUseHost({ title, question, confirmText, cancelText = "Cancel upload" }: HostQuestion): { answer: Promise<boolean>; close(): void; readonly failed: boolean; } {
-    const { answer, settle } = oneShot<boolean>();
-    const modalKey = `bfu-ask-host-${nextKey++}`;
-    let broken = false;
+    };
+    const modalKey = `bfu-${name}-${nextKey++}`;
     const failed = (error: unknown) => {
         broken = true;
-        logger.error(`Couldn't show the question "${title}"`, error);
-        settle(false);
+        logger.error(`Couldn't show ${what}`, error);
+        settle(onFail);
     };
     try {
         openModal(props => (
             <ErrorBoundary noop onError={({ error }) => { failed(error); setTimeout(() => closeModal(modalKey)); }}>
-                <ConfirmModal
-                    {...props}
-                    title={title}
-                    subtitle={question}
-                    confirmText={confirmText}
-                    cancelText={cancelText}
-                    variant="primary"
-                    onConfirm={() => settle(true)}
-                    onCancel={() => settle(false)}
-                />
+                {render(props, settle)}
             </ErrorBoundary>
-        ), { modalKey, onCloseCallback: () => settle(false) });
+        ), { modalKey, onCloseCallback: () => void (deferDismiss ? setTimeout(() => settle(onDismiss)) : settle(onDismiss)) });
     } catch (error) {
         failed(error);
     }
     return {
         answer,
-        close: () => {
-            settle(false);
-            closeModal(modalKey);
-        },
+        settle,
+        modalKey,
         get failed() {
             return broken;
+        }
+    };
+}
+
+export function askToUseHost({ title, question, confirmText, cancelText = "Cancel upload" }: HostQuestion): { answer: Promise<boolean>; close(): void; readonly failed: boolean; } {
+    const ask = openQuestion<boolean>("ask-host", `the question "${title}"`, false, false, false, (props, settle) => (
+        <ConfirmModal
+            {...props}
+            title={title}
+            subtitle={question}
+            confirmText={confirmText}
+            cancelText={cancelText}
+            variant="primary"
+            onConfirm={() => settle(true)}
+            onCancel={() => settle(false)}
+        />
+    ));
+    return {
+        answer: ask.answer,
+        close: () => {
+            ask.settle(false);
+            closeModal(ask.modalKey);
+        },
+        get failed() {
+            return ask.failed;
         }
     };
 }
@@ -92,50 +99,29 @@ export function openPluginSettings(): void {
 
 export type TakeoverAnswer = "upload" | "choose" | "dismissed" | "failed";
 
-let nextNoticeKey = 1;
-
 export function askTakeover(text: string): Promise<TakeoverAnswer> {
-    const { answer, settle } = oneShot<TakeoverAnswer>();
-    const modalKey = `bfu-takeover-${nextNoticeKey++}`;
-    const failed = (error: unknown) => {
-        logger.error("Couldn't show the first-use notice", error);
-        settle("failed");
-    };
-    try {
-        openModal(props => (
-            <ErrorBoundary noop onError={({ error }) => { failed(error); setTimeout(() => closeModal(modalKey)); }}>
-                <ConfirmModal
-                    {...props}
-                    title="BigFileUpload"
-                    subtitle={text}
-                    confirmText="Upload"
-                    cancelText="Choose host"
-                    variant="primary"
-                    onConfirm={() => settle("upload")}
-                    onCancel={() => settle("choose")}
-                />
-            </ErrorBoundary>
-        ), { modalKey, onCloseCallback: () => setTimeout(() => settle("dismissed")) });
-    } catch (error) {
-        failed(error);
-    }
-    return answer;
+    return openQuestion<TakeoverAnswer>("takeover", "the first-use notice", "failed", "dismissed", true, (props, settle) => (
+        <ConfirmModal
+            {...props}
+            title="BigFileUpload"
+            subtitle={text}
+            confirmText="Upload"
+            cancelText="Choose host"
+            variant="primary"
+            onConfirm={() => settle("upload")}
+            onCancel={() => settle("choose")}
+        />
+    )).answer;
 }
 
 export function notifyBlockedHost(title: string, body: string, onClick: () => void): void {
-    try {
-        void Promise.resolve(showNotification({ title, body, permanent: true, noPersist: true, onClick })).catch(error => logger.error("Couldn't show the blocked-host notification", error));
-    } catch (error) {
-        logger.error("Couldn't show the blocked-host notification", error);
-    }
+    showNotification({ title, body, permanent: true, noPersist: true, onClick }).catch(error => logger.error("Couldn't show the blocked-host notification", error));
 }
 
 export interface OriginRetryAnswer {
     retry: boolean;
     always: boolean;
 }
-
-let nextRetryKey = 1;
 
 function OriginRetryDialog({ modalProps, host, question, settle }: { modalProps: object; host: string; question: string; settle(answer: OriginRetryAnswer): void; }) {
     const [always, setAlways] = React.useState(false);
@@ -155,22 +141,9 @@ function OriginRetryDialog({ modalProps, host, question, settle }: { modalProps:
 }
 
 export function askOriginRetry(host: string, question: string): Promise<OriginRetryAnswer> {
-    const { answer, settle } = oneShot<OriginRetryAnswer>();
-    const modalKey = `bfu-origin-retry-${nextRetryKey++}`;
-    const failed = (error: unknown) => {
-        logger.error("Couldn't show the blocked-host question", error);
-        settle({ retry: false, always: false });
-    };
-    try {
-        openModal(props => (
-            <ErrorBoundary noop onError={({ error }) => { failed(error); setTimeout(() => closeModal(modalKey)); }}>
-                <OriginRetryDialog modalProps={props} host={host} question={question} settle={settle} />
-            </ErrorBoundary>
-        ), { modalKey, onCloseCallback: () => setTimeout(() => settle({ retry: false, always: false })) });
-    } catch (error) {
-        failed(error);
-    }
-    return answer;
+    return openQuestion<OriginRetryAnswer>("origin-retry", "the blocked-host question", { retry: false, always: false }, { retry: false, always: false }, true, (props, settle) => (
+        <OriginRetryDialog modalProps={props} host={host} question={question} settle={settle} />
+    )).answer;
 }
 
 export function notifyTakeover(text: string): void {
@@ -364,21 +337,16 @@ function queuePrompt(): void {
     setTimeout(() => void showCorsProxyPrompt(), 2000);
 }
 
-export async function showCorsProxyPrompt(fromButton = false): Promise<void> {
-    if (IS_REPORTER) return;
-    if (!fromButton) {
-        try {
-            if (!Settings.plugins.BigFileUpload?.enabled) return;
-            await withinDeadline(primeDeviceState());
-            if (!peekDeviceState().unreadable && !consentPending()) return;
-            openPrompt();
-        } finally {
-            promptQueued = false;
-            syncBusy();
-        }
-        return;
+export async function showCorsProxyPrompt(): Promise<void> {
+    try {
+        if (!Settings.plugins.BigFileUpload?.enabled) return;
+        await withinDeadline(primeDeviceState());
+        if (!peekDeviceState().unreadable && !consentPending()) return;
+        openPrompt();
+    } finally {
+        promptQueued = false;
+        syncBusy();
     }
-    openPrompt();
 }
 
 let promptOpen = false;
@@ -402,20 +370,20 @@ function openPrompt(notices = takeVersionNotices()): void {
         unsubscribe();
         syncBusy();
     };
-    const onAnswer = (accept: boolean, choice?: ProxyChoice, openedDraft?: string) => {
+    const onAnswer = (accept: boolean, openedDraft?: string, noRedirects?: boolean) => {
         if (renderFailed) return;
         answered = true;
         try {
-            if (accept && openedDraft !== undefined && proxyKey(initialDraft()) !== proxyKey(openedDraft)) {
+            if (accept && proxyKey(initialDraft()) !== proxyKey(openedDraft)) {
                 reopen = true;
                 showToast({ text: `BigFileUpload: the CORS proxy changed to ${describeProxy(initialDraft()).host} while the question was open, so nothing was saved. Please answer again`, duration: 10000 });
                 return;
             }
             const previous = settings.store.corsProxyUrl;
-            answerProxyHere(accept, accept && choice && choice.url !== openedDraft ? choice.url : undefined);
-            if (accept && choice) {
-                rememberCustomProxy(previous, choice.url);
-                if (!isPresetProxy(choice.url) && choice.noRedirects !== redirectTickFor(choice.url)) setRedirectTick(choice.url, choice.noRedirects);
+            answerProxyHere(accept);
+            if (accept && openedDraft !== undefined && noRedirects !== undefined) {
+                rememberCustomProxy(previous, openedDraft);
+                if (!isPresetProxy(openedDraft) && noRedirects !== redirectTickFor(openedDraft)) setRedirectTick(openedDraft, noRedirects);
             }
         } catch (error) {
             logger.error("Couldn't record the CORS-proxy answer", error);
@@ -453,10 +421,10 @@ const initialDraft = () => proxyKey(settings.store.corsProxyUrl) != null ? norma
 function PromptModal({ modalProps, notices, onAnswer }: {
     modalProps: { transitionState: number; onClose(): void; };
     notices: string[];
-    onAnswer(accept: boolean, choice?: ProxyChoice, openedDraft?: string): void;
+    onAnswer(accept: boolean, openedDraft?: string, noRedirects?: boolean): void;
 }) {
     const [openedDraft] = React.useState(initialDraft);
-    const [choice] = React.useState<ProxyChoice>(() => ({ url: openedDraft, noRedirects: redirectTickFor(openedDraft) }));
+    const [noRedirects] = React.useState(() => redirectTickFor(openedDraft));
     return (
         <ConfirmModal
             {...modalProps}
@@ -465,10 +433,10 @@ function PromptModal({ modalProps, notices, onAnswer }: {
             title={IS_WEB ? "BigFileUpload: use a proxy for file hosts?" : "BigFileUpload: retry blocked uploads through a proxy?"}
             confirmText="Use the proxy"
             cancelText="Don't use it"
-            onConfirm={() => onAnswer(true, choice, openedDraft)}
+            onConfirm={() => onAnswer(true, openedDraft, noRedirects)}
             onCancel={() => onAnswer(false)}
         >
-            <PromptBody draft={choice.url} notices={notices} />
+            <PromptBody draft={openedDraft} notices={notices} />
         </ConfirmModal>
     );
 }
@@ -512,8 +480,8 @@ function PromptBody({ draft, notices }: { draft: string; notices: string[]; }) {
     const skipNative = embedSkipNative !== false;
     const customOptIn = Boolean(embedUseCustomProxy) && embedCustomProxyFor === proxyKey(draft);
     const corsService = getEmbedProxyService() === "cors";
-    const wrapsVideo = Boolean(embedProxyEnabled) && corsService && (preset || (customOptIn && isPublicProxyUrl(draft)));
     const substitutesVideo = Boolean(embedProxyEnabled) && corsService;
+    const wrapsVideo = substitutesVideo && (preset || (customOptIn && isPublicProxyUrl(draft)));
     const customOptedIn = wrapsVideo && !preset;
     const primaryLine = IS_WEB ? webPrimaryLine() : null;
     const customVideo = substitutesVideo && !preset && !wrapsVideo

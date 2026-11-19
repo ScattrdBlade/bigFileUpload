@@ -7,17 +7,17 @@
 import * as DataStore from "@api/DataStore";
 import { copyToClipboard } from "@utils/clipboard";
 import { insertTextIntoChatInputBox, sendMessage } from "@utils/discord";
-import { PluginNative } from "@utils/types";
+import { humanFriendlyJoin } from "@utils/text";
 import { chooseFile } from "@utils/web";
 import { ChannelSectionStore, ChannelStore, DraftType, MessageActions, PermissionsBits, PermissionStore, SelectedChannelStore, showToast, UserStore } from "@webpack/common";
 
 import { ensureMigrated, getStripQueryMode, settings, withDeclaredDefaults } from "../settings";
-import { bodySize, buildShareXHeaders, credentialProblems, CredentialValues, DEFAULT_ACTIVE_FALLBACKS, describeProxy, directWebHostNames, fallbackServiceOrder, fallsBackToPublic, fileTypePasses, findProxyPreset, hasConfiguredCredential, isGenericWebdav, isPrivateFallbackTarget, isProxiedThrough, isWorkersProxy, listNames, logger, normalizeActiveFallbacks, parseEncryptingHostDomains, parseFileTypeFilter, parseShareXConfig, PIXELDRAIN_KEY_REQUIRED, previewShareXRequestValue, proxyBodyLimit, proxyKey, resolveShareXRequestValue, resolveShareXTemplate, serviceLabel, SERVICES, ServiceType, ShareXUploaderConfig, TMPFILES_KEPT, toProxiedUrl, TRACKING_QUERY_KEYS, validateShareXConfig, ZEROX0_KEPT } from "../types";
+import { bodySize, buildShareXHeaders, credentialProblems, CredentialValues, DEFAULT_ACTIVE_FALLBACKS, describeProxy, directWebHostNames, fallbackServiceOrder, fallsBackToPublic, fileTypePasses, findProxyPreset, hasConfiguredCredential, isGenericWebdav, isPrivateFallbackTarget, isProxiedThrough, isWorkersProxy, logger, normalizeActiveFallbacks, parseEncryptingHostDomains, parseFileTypeFilter, parseShareXConfig, PIXELDRAIN_KEY_REQUIRED, previewShareXRequestValue, proxyBodyLimit, proxyKey, requiresCredentials, resolveShareXRequestValue, resolveShareXTemplate, serviceLabel, SERVICES, ServiceType, ShareXUploaderConfig, TMPFILES_KEPT, toBase64, toProxiedUrl, TRACKING_QUERY_KEYS, validateShareXConfig, ZEROX0_KEPT } from "../types";
 import { announceKeptUpload, announceLateCancel, announceSendFailure, askOriginRetry, askTakeover, askToUseHost, LateCancelEntry, LateCancelError, notifyBlockedHost, notifyTakeover, openPluginSettings, UploadCancelledError } from "./dialogs";
 import { ByteSource, convertApngToGif, getExtensionFromBytes, getExtensionFromMime, getMimeFromExtension, getUrlExtension, isOggVideo } from "./media";
 import { addHistoryEntry, cleanHostText, Deletion, describeBody, describeHttpFailure, HistoryEntry, isDeleting, loadUploadHistory, newHistoryId, redactText, rememberSessionSecret, removeHistoryEntry, setDeleteActions, setDeleting, setDeviceSecret } from "./privacy";
-import { addAlwaysOrigin, alwaysRetryAllowed, checkRoutingSettings, consentPending, dropProxyFirst, EmbedContext, embedTarget, EmbedWait, getActiveCorsProxyUrl, hasUploadedToHttpOrigin, isHostDown, isInsecureHttpAllowed, isLanOrigin, isVideoLink, loadProxyOrigins, markHostDown, markProxyFirst, needsOriginConfirmation, noticeProxyChange, notifyHttpPrefs, onAlwaysOriginsForgotten, peekDeviceProxyAnswer, predictEmbedTarget, primeDeviceState, probeEmbedTarget, proxyAllowedHere, proxyConsentGiven, proxyFirstEntry, proxyOffReason, proxyRedirectsSafe, readCapped, readVideoDims, rememberHttpOrigin, rememberLanOrigin, routingSnapshot, VideoDims, whenPromptIdle, wrapForEmbed } from "./proxy";
-import { bytesToHex, failedBeforeSending, hasSecretQuery, httpHostKind, httpLanOnlyText, isBuiltInOrigin, isDnsCode, isPrivateAddress, isProxyReachableHost, isSpooled, isSpoolPart, NATIVE_MAX_BUFFER, PROXY_RETRY_KINDS, proxyCouldNotReach, proxySourceAllowed, randomHexBytes, RequestBody, RESPONSE_GRACE_MS, SPOOL_MAX_BYTES, SPOOL_MIN_BYTES, SPOOL_SLICE_BYTES, SpooledFile, SpoolPart, SpoolSource, UploadBody, UploadFailure } from "./shared";
+import { addAlwaysOrigin, alwaysRetryAllowed, checkRoutingSettings, consentPending, dropProxyFirst, EmbedContext, embedTarget, getActiveCorsProxyUrl, hasUploadedToHttpOrigin, isHostDown, isInsecureHttpAllowed, isLanOrigin, isVideoLink, loadProxyOrigins, markHostDown, markProxyFirst, Native, noticeProxyChange, notifyHttpPrefs, onAlwaysOriginsForgotten, peekDeviceProxyAnswer, predictEmbedTarget, primeDeviceState, probeEmbedTarget, proxyAllowedHere, proxyConsentGiven, proxyFirstEntry, proxyOffReason, proxyRedirectsSafe, readCapped, readVideoDims, rememberHttpOrigin, rememberLanOrigin, routingSnapshot, VideoDims, whenPromptIdle, wrapForEmbed } from "./proxy";
+import { bytesToHex, decodeUrlSegment, failedBeforeSending,hasSecretQuery, httpHostKind, httpLanOnlyText, isBuiltInOrigin, isDnsCode, isPrivateAddress, isProxyReachableHost, isSpooled, isSpoolPart, NATIVE_MAX_BUFFER, PROXY_RETRY_KINDS, proxyCouldNotReach, proxySourceAllowed, randomHexBytes, RequestBody, RESPONSE_GRACE_MS, SPOOL_MAX_BYTES, SPOOL_MIN_BYTES, SPOOL_SLICE_BYTES, SpooledFile, SpoolPart, SpoolSource, UploadBody, UploadFailure } from "./shared";
 
 const KEY = "BigFileUpload_gofileGuestToken";
 
@@ -57,12 +57,12 @@ export const gofileGuestSynced = () => settings.plain?.gofileSyncGuestToken === 
 
 export function storedGofileGuestToken(): string {
     if (gofileGuestSynced()) return asToken(settings.plain?.gofileGuestToken);
-    if (!loading) void loadGofileGuest();
+    void loadGofileGuest();
     return cache;
 }
 
 export function hasStoredGofileGuestToken(): boolean {
-    if (!loading) void loadGofileGuest();
+    void loadGofileGuest();
     return cache !== "" || asToken(settings.plain?.gofileGuestToken) !== "";
 }
 
@@ -92,49 +92,6 @@ export async function resetGofileGuestToken(): Promise<void> {
     for (const old of [cache, asToken(settings.plain?.gofileGuestToken)]) if (old) rememberSessionSecret(old);
     saveDevice("");
     if (asToken(settings.plain?.gofileGuestToken)) settings.store.gofileGuestToken = "";
-}
-
-type UploadRequestResponse = {
-    ok: boolean;
-    status: number;
-    headers: Headers;
-    text(): Promise<string>;
-};
-
-export type S3RequestOptions = {
-    method: string;
-    headers: Record<string, string>;
-    bodyType: "binary";
-    filename?: string;
-    idempotent?: boolean;
-    proxyRetry?: "deny";
-};
-
-export interface S3Transport {
-    request(url: string, options: S3RequestOptions, body: RequestBody | null): Promise<UploadRequestResponse>;
-    proxied: boolean;
-    proxyLimit: number | null;
-    corsHeaders: boolean;
-    bucketCors: boolean;
-    answeredDirect?(): boolean;
-    multipartBlocked: string | null;
-    payloadSha256(body: UploadBody): Promise<string>;
-    hashReadsWhole(body: UploadBody): Promise<boolean>;
-    prepare(body: UploadBody): Promise<void>;
-    approve(url: string): Promise<void>;
-    part(body: UploadBody, offset: number, length: number, hashed: boolean): Promise<{ body: RequestBody; sha256?: string; }>;
-    abort(url: string, headers: Record<string, string>): Promise<number>;
-    retry(error: unknown, options?: RetryOptions): Promise<boolean>;
-    checkCancel(): void;
-    ownRetries(): void;
-    parts(state: MultipartState | null): void;
-    uploaded?(object: S3Object): void;
-}
-
-export interface S3Object {
-    url: string;
-    endpoint: string;
-    bucket: string;
 }
 
 export interface RetryOptions {
@@ -179,17 +136,9 @@ function encodeRfc3986(value: string): string {
 
 const byByteOrder = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 
-function decodeSegment(segment: string): string {
-    try {
-        return decodeURIComponent(segment);
-    } catch {
-        return segment;
-    }
-}
-
 function buildS3Path(endpointPath: string, ...parts: string[]): string {
     const segments = [
-        ...endpointPath.split("/").filter(Boolean).map(decodeSegment),
+        ...endpointPath.split("/").filter(Boolean).map(decodeUrlSegment),
         ...parts.filter(Boolean).flatMap(part => part.split("/"))
     ].filter(Boolean);
     if (segments.some(segment => segment === "." || segment === "..")) {
@@ -197,20 +146,6 @@ function buildS3Path(endpointPath: string, ...parts: string[]): string {
     }
     const normalized = segments.map(encodeRfc3986).join("/");
     return normalized ? `/${normalized}` : "/";
-}
-
-function getTimestampParts(date: Date): { amzDate: string; dateStamp: string; } {
-    const year = date.getUTCFullYear();
-    const month = String(date.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(date.getUTCDate()).padStart(2, "0");
-    const hour = String(date.getUTCHours()).padStart(2, "0");
-    const minute = String(date.getUTCMinutes()).padStart(2, "0");
-    const second = String(date.getUTCSeconds()).padStart(2, "0");
-
-    return {
-        amzDate: `${year}${month}${day}T${hour}${minute}${second}Z`,
-        dateStamp: `${year}${month}${day}`
-    };
 }
 
 export async function sha256Hex(data: ArrayBuffer | string): Promise<string> {
@@ -253,7 +188,7 @@ const xmlEscape = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, 
 
 const describeS3Error = (status: number, body: string) => describeHttpFailure(ServiceType.S3, status, body);
 
-async function refusesUnsignedPayload(response: UploadRequestResponse): Promise<boolean> {
+async function refusesUnsignedPayload(response: UploadHttpResponse): Promise<boolean> {
     const code = xmlValue(await response.text(), "Code");
     return (response.status === 403 && code === "SignatureDoesNotMatch")
         || (response.status === 400 && code === "XAmzContentSHA256Mismatch")
@@ -275,12 +210,12 @@ let clockOffsetMs = 0;
 
 const learnedRegions = new Map<string, string>();
 
-async function correctedFrom(target: S3Target, response: UploadRequestResponse, t: S3Transport): Promise<boolean> {
+async function correctedFrom(target: S3Target, response: UploadHttpResponse, proxied: boolean): Promise<boolean> {
     if (response.status !== 403 && response.status !== 400) return false;
     const text = await response.text();
     const code = xmlValue(text, "Code");
     if (code === "RequestTimeTooSkewed") {
-        if (t.proxied || t.answeredDirect?.() === false) return false;
+        if (proxied || lastOutcome?.rerouted || attemptProxy) return false;
         const server = Date.parse(response.headers.get("date") ?? "") || Date.parse(xmlValue(text, "ServerTime") ?? "");
         if (!Number.isFinite(server)) return false;
         clockOffsetMs = server - Date.now();
@@ -299,7 +234,8 @@ async function correctedFrom(target: S3Target, response: UploadRequestResponse, 
 }
 
 async function signedHeaders(target: S3Target, method: string, query: Record<string, string>, headers: Record<string, string>, payloadHash: string): Promise<Record<string, string>> {
-    const { amzDate, dateStamp } = getTimestampParts(new Date(Date.now() + clockOffsetMs));
+    const amzDate = new Date(Date.now() + clockOffsetMs).toISOString().replace(/[-:]|\.\d{3}/g, "");
+    const dateStamp = amzDate.slice(0, 8);
     const canonicalHeadersMap: Record<string, string> = {
         ...Object.fromEntries(Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value])),
         "host": target.host,
@@ -351,7 +287,9 @@ function requestUrl(target: S3Target, query: Record<string, string>): string {
     return url.href;
 }
 
-export async function uploadToS3(fileBlob: UploadBody, filename: string, t: S3Transport): Promise<string> {
+export async function uploadToS3(fileBlob: UploadBody, filename: string): Promise<string> {
+    const proxied = requestRoute(ServiceType.S3) === "proxy";
+    const proxyLimit = proxied ? proxyBodyLimit(getActiveCorsProxyUrl()) : null;
     const {
         s3Endpoint,
         s3Bucket,
@@ -387,9 +325,8 @@ export async function uploadToS3(fileBlob: UploadBody, filename: string, t: S3Tr
     const objectKeyPath = objectKeyRaw.split("/").filter(Boolean).map(encodeRfc3986).join("/");
 
     const host = s3ForcePathStyle ? endpoint.host : `${s3Bucket}.${endpoint.host}`;
-    const canonicalUri = s3ForcePathStyle
-        ? buildS3Path(endpoint.pathname, s3Bucket, objectKeyRaw)
-        : buildS3Path(endpoint.pathname, objectKeyRaw);
+    const bucketParts = s3ForcePathStyle ? [s3Bucket] : [];
+    const canonicalUri = buildS3Path(endpoint.pathname, ...bucketParts, objectKeyRaw);
 
     const uploadUrl = new URL(endpoint.toString());
     uploadUrl.host = host;
@@ -402,28 +339,27 @@ export async function uploadToS3(fileBlob: UploadBody, filename: string, t: S3Tr
 
     const regionKey = `${endpoint.host}\n${s3Bucket}\n${s3Region}`;
     const target: S3Target = { host, canonicalUri, url: uploadUrl, region: learnedRegions.get(regionKey) ?? s3Region, regionKey, accessKeyId: s3AccessKeyId, secretAccessKey: s3SecretAccessKey, sessionToken: s3SessionToken || undefined };
-    const unsigned = endpoint.protocol === "https:" && !t.proxied && !s3SignPayload;
+    const unsigned = endpoint.protocol === "https:" && !proxied && !s3SignPayload;
     const contentType = fileBlob.type || "application/octet-stream";
-    const proxyLimit = t.proxied ? t.proxyLimit : null;
     const objectHeaders: Record<string, string> = {
         "Content-Type": contentType,
-        ...!t.bucketCors && { "Content-Disposition": `inline; filename*=UTF-8''${encodeRfc3986(filename)}` }
+        ...(Native || proxied) && { "Content-Disposition": `inline; filename*=UTF-8''${encodeRfc3986(filename)}` }
     };
 
-    await t.approve(uploadUrl.toString());
+    await approveOrigin(uploadUrl.toString());
     if (needsMultipart(fileBlob.size, proxyLimit)) {
-        await multipartUpload(target, fileBlob, objectHeaders, unsigned, proxyLimit, t);
+        await multipartUpload(target, fileBlob, objectHeaders, unsigned, proxyLimit, proxied);
     } else {
         const put = async (hashed: boolean) => {
-            const payloadHash = hashed ? await t.payloadSha256(fileBlob) : UNSIGNED_PAYLOAD;
+            const payloadHash = hashed ? await payloadSha256(fileBlob) : UNSIGNED_PAYLOAD;
             const headers = await signedHeaders(target, "PUT", {}, objectHeaders, payloadHash);
-            return t.request(uploadUrl.toString(), { method: "PUT", headers, bodyType: "binary", filename, ...(!hashed && { proxyRetry: "deny" as const }) }, fileBlob);
+            return serviceUploadRequest(uploadUrl.toString(), { method: "PUT", headers, bodyType: "binary", filename, ...(!hashed && { proxyRetry: "deny" as const }) }, fileBlob);
         };
 
         let response = await put(!unsigned);
-        if (await correctedFrom(target, response, t)) response = await put(!unsigned);
+        if (await correctedFrom(target, response, proxied)) response = await put(!unsigned);
         if (unsigned && await refusesUnsignedPayload(response)) {
-            if (fileBlob.size > HASHED_RESEND_MAX && await t.hashReadsWhole(fileBlob)) {
+            if (fileBlob.size > HASHED_RESEND_MAX && !isSpooled(fileBlob) && !await hashingSpool(fileBlob)) {
                 throw new Error(`Upload failed: ${describeS3Error(response.status, await response.text()).replace(/\.+$/, "")}. Check the access key and secret key. If they are right, this server needs the payload's hash: turn on "Sign Payload" in the S3 settings`);
             }
             response = await put(true);
@@ -434,16 +370,14 @@ export async function uploadToS3(fileBlob: UploadBody, filename: string, t: S3Tr
         }
     }
 
-    t.uploaded?.({ url: uploadUrl.href, endpoint: s3Endpoint.trim(), bucket: s3Bucket.trim() });
+    attemptKept = { deletion: { kind: "s3", url: uploadUrl.href }, endpointOrigin: uploadUrl.origin, s3: { endpoint: s3Endpoint.trim(), bucket: s3Bucket.trim() } };
 
     if (s3PublicUrl) {
         const base = s3PublicUrl.trim().replace(/\/+$/, "");
         return `${base}/${objectKeyPath}`;
     }
 
-    const publicBase = s3ForcePathStyle
-        ? `${endpoint.origin}${buildS3Path(endpoint.pathname, s3Bucket)}`
-        : `${endpoint.protocol}//${host}${buildS3Path(endpoint.pathname)}`;
+    const publicBase = `${endpoint.protocol}//${host}${buildS3Path(endpoint.pathname, ...bucketParts)}`;
 
     return `${publicBase.replace(/\/+$/, "")}/${objectKeyPath}`;
 }
@@ -459,30 +393,30 @@ export async function signS3Delete(objectUrl: string): Promise<Record<string, st
     return signedHeaders(target, "DELETE", {}, {}, EMPTY_SHA256);
 }
 
-async function multipartUpload(target: S3Target, fileBlob: UploadBody, objectHeaders: Record<string, string>, unsignedParts: boolean, proxyLimit: number | null, t: S3Transport): Promise<void> {
-    if (t.multipartBlocked) throw new Error(t.multipartBlocked);
+async function multipartUpload(target: S3Target, fileBlob: UploadBody, objectHeaders: Record<string, string>, unsignedParts: boolean, proxyLimit: number | null, proxied: boolean): Promise<void> {
+    if (!canMultipart()) throw new Error(MULTIPART_RESTART_TEXT);
     const { size } = fileBlob;
     const partSize = multipartPartSize(size, proxyLimit);
     const parts = Math.ceil(size / partSize);
     const send = async (method: string, query: Record<string, string>, body: Blob | null, headers: Record<string, string> = {}) => {
         const payloadHash = body?.size ? await sha256Hex(await body.arrayBuffer()) : EMPTY_SHA256;
-        const once = async () => t.request(requestUrl(target, query), { method, headers: await signedHeaders(target, method, query, headers, payloadHash), bodyType: "binary", idempotent: true }, body);
+        const once = async () => serviceUploadRequest(requestUrl(target, query), { method, headers: await signedHeaders(target, method, query, headers, payloadHash), bodyType: "binary", idempotent: true }, body);
         const response = await once();
-        return await correctedFrom(target, response, t) ? once() : response;
+        return await correctedFrom(target, response, proxied) ? once() : response;
     };
     const withRetry = async <T>(run: () => Promise<T>): Promise<T> => {
         try {
             return await run();
         } catch (error) {
-            if (!await t.retry(error)) throw error;
+            if (!await retryRequest(error)) throw error;
             return run();
         }
     };
 
-    t.ownRetries();
-    await t.prepare(fileBlob);
-    t.checkCancel();
-    t.parts({ done: 0, total: size, part: 1, parts });
+    requestsRetried = true;
+    if (Native && !isSpooled(fileBlob)) await spoolFor(fileBlob);
+    if (cancelRequested) throw new UploadCancelledError();
+    showParts({ done: 0, total: size, part: 1, parts });
     let uploadId: string | undefined;
     let completed = false;
     try {
@@ -497,26 +431,26 @@ async function multipartUpload(target: S3Target, fileBlob: UploadBody, objectHea
         const etags: string[] = [];
         let unsigned = unsignedParts;
         for (let n = 1; n <= parts; n++) {
-            t.checkCancel();
+            if (cancelRequested) throw new UploadCancelledError();
             const offset = (n - 1) * partSize;
             const length = Math.min(partSize, size - offset);
-            t.parts({ done: offset, total: size, part: n, parts });
+            showParts({ done: offset, total: size, part: n, parts });
             const query = { partNumber: String(n), uploadId };
             let retried = false;
             let corrected = false;
             let etag: string | null = null;
             for (let tries = 0; tries < 4 && etag === null; tries++) {
-                const part = await t.part(fileBlob, offset, length, !unsigned);
+                const part = await partOf(fileBlob, offset, length, !unsigned);
                 const headers = await signedHeaders(target, "PUT", query, {}, part.sha256 ?? UNSIGNED_PAYLOAD);
-                let response: UploadRequestResponse | undefined;
+                let response: UploadHttpResponse | undefined;
                 let failure: unknown;
                 try {
-                    response = await t.request(requestUrl(target, query), { method: "PUT", headers, bodyType: "binary", idempotent: true, ...(unsigned && { proxyRetry: "deny" as const }) }, part.body);
+                    response = await serviceUploadRequest(requestUrl(target, query), { method: "PUT", headers, bodyType: "binary", idempotent: true, ...(unsigned && { proxyRetry: "deny" as const }) }, part.body);
                 } catch (error) {
                     failure = error;
                 }
                 if (response) {
-                    if (!corrected && await correctedFrom(target, response, t)) {
+                    if (!corrected && await correctedFrom(target, response, proxied)) {
                         corrected = true;
                         continue;
                     }
@@ -526,20 +460,20 @@ async function multipartUpload(target: S3Target, fileBlob: UploadBody, objectHea
                     }
                     if (response.ok) {
                         etag = response.headers.get("etag");
-                        if (!etag) throw new Error(t.corsHeaders ? MULTIPART_ETAG_TEXT : `S3 didn't return an ETag for part ${n}`);
+                        if (!etag) throw new Error(!Native ? MULTIPART_ETAG_TEXT : `S3 didn't return an ETag for part ${n}`);
                         continue;
                     }
                     failure = new Error(`Part ${n} of ${parts} failed: ${describeS3Error(response.status, await response.text())}`);
                 }
-                if (retried || !await t.retry(failure, { resend: true })) throw failure;
+                if (retried || !await retryRequest(failure, { resend: true })) throw failure;
                 retried = true;
             }
             if (etag === null) throw new Error(`Part ${n} of ${parts} failed`);
             etags.push(etag);
         }
 
-        t.checkCancel();
-        t.parts({ done: size, total: size, part: parts, parts, completing: true });
+        if (cancelRequested) throw new UploadCancelledError();
+        showParts({ done: size, total: size, part: parts, parts, completing: true });
         const xml = `<CompleteMultipartUpload xmlns="http://s3.amazonaws.com/doc/2006-03-01/">${etags.map((etag, i) => `<Part><PartNumber>${i + 1}</PartNumber><ETag>${xmlEscape(etag)}</ETag></Part>`).join("")}</CompleteMultipartUpload>`;
         for (let tries = 0; tries < 2 && !completed; tries++) {
             let failure: unknown;
@@ -556,14 +490,14 @@ async function multipartUpload(target: S3Target, fileBlob: UploadBody, objectHea
             } catch (error) {
                 failure = error;
             }
-            if (tries > 0 || !await t.retry(failure, { transient })) throw failure;
+            if (tries > 0 || !await retryRequest(failure, { transient })) throw failure;
         }
     } finally {
-        t.parts(null);
+        showParts(null);
         if (uploadId && !completed) {
             try {
                 const query = { uploadId };
-                const status = await t.abort(requestUrl(target, query), await signedHeaders(target, "DELETE", query, {}, EMPTY_SHA256));
+                const status = await abortMultipart(requestUrl(target, query), await signedHeaders(target, "DELETE", query, {}, EMPTY_SHA256), proxied);
                 if (status !== 204 && status !== 200 && status !== 404) logger.warn(`Couldn't abort the multipart upload ${uploadId}: S3 answered ${status}`);
             } catch (error) {
                 logger.warn(`Couldn't abort the multipart upload ${uploadId}`, error);
@@ -572,20 +506,11 @@ async function multipartUpload(target: S3Target, fileBlob: UploadBody, objectHea
     }
 }
 
-const Native = IS_WEB
-    ? null
-    : (VencordNative.pluginHelpers.BigFileUpload as PluginNative<typeof import("../native")> | undefined) ?? null;
-
-export { listNames, logger };
-
 export const hasNativeHelper = Native !== null;
 
 export const clientName = () => IS_WEB ? "Web" : IS_VESKTOP ? "Vesktop" : "Desktop";
 
 export const transportName = () => Native ? "native" : "renderer";
-
-export { getEmbedProxyService } from "./proxy";
-export { getActiveCorsProxyUrl, proxyAllowedHere } from "./proxy";
 
 void primeDeviceState();
 
@@ -623,17 +548,17 @@ export const routesThroughProxy = (service: ServiceType) => requestRoute(service
 
 const PROXY_PLACE = IS_WEB ? "On Vencord Web" : "In this app without the native helper";
 
-export function credentialViaProxy(service: ServiceType): boolean {
+function credentialProxyable(service: ServiceType): boolean {
     const web = SERVICES[service]?.web;
-    return !Native && proxyAllowedHere() && web !== undefined && web !== "direct" && web !== "direct-simple" && web !== "unsupported"
-        && carriesCredential(service);
+    return !Native && (web === "proxy" || web === "user") && carriesCredential(service);
 }
+
+export const credentialViaProxy = (service: ServiceType) => proxyAllowedHere() && credentialProxyable(service);
 
 export function proxiedCredentialHosts(allowed = true): ServiceType[] {
     const selected = settings.store.serviceType as ServiceType;
     const hosts = [selected, ...settings.store.disableFallbacks ? [] : getFallbackServices()];
-    return [...new Set(hosts)].filter(s => SERVICES[s] && (allowed ? credentialViaProxy(s) : !Native && SERVICES[s].web !== "direct"
-        && SERVICES[s].web !== "direct-simple" && SERVICES[s].web !== "unsupported" && carriesCredential(s)));
+    return [...new Set(hosts)].filter(s => allowed ? credentialViaProxy(s) : credentialProxyable(s));
 }
 
 function uploadUrlCarriesKey(service: ServiceType): boolean {
@@ -666,7 +591,7 @@ export function proxyCredentialWarning(service?: ServiceType): string | null {
     const proxy = describeProxy(url);
     const given = proxyConsentGiven();
     const one = service !== undefined;
-    const subject = one ? "this credential" : `the credentials you entered for ${listNames(hosts.map(serviceLabel))}`;
+    const subject = one ? "this credential" : `the credentials you entered for ${humanFriendlyJoin(hosts.map(serviceLabel))}`;
     const verb = given ? one ? "passes" : "pass" : "will pass";
     const target = proxy.preset ? `the CORS proxy (${proxy.host}, run by ${proxy.operator})` : proxy.host;
     const parts = [`${PROXY_PLACE}, ${subject} ${verb} through ${target}${given ? "" : " once you accept the CORS proxy on this device"}.`];
@@ -674,7 +599,7 @@ export function proxyCredentialWarning(service?: ServiceType): string | null {
     else if (given) parts.push("Use your own proxy to avoid that.");
     const keyed = hosts.filter(uploadUrlCarriesKey);
     if (keyed.length) {
-        const where = one ? "The key in the upload URL" : `The key in the upload URL of ${listNames(keyed.map(serviceLabel))}`;
+        const where = one ? "The key in the upload URL" : `The key in the upload URL of ${humanFriendlyJoin(keyed.map(serviceLabel))}`;
         parts.push(`${where} ends up in the proxy's own request URL, ${proxy.preset ? "which Workers logging records by default" : "where the proxy's logs can record it"}.`);
     }
     const redirectsSafe = proxyRedirectsSafe();
@@ -682,7 +607,7 @@ export function proxyCredentialWarning(service?: ServiceType): string | null {
         if (!redirectsSafe) parts.push(`Your proxy may forward ${one ? "this credential" : "these credentials"} to another site if the host redirects the upload, and BigFileUpload can't stop that ${RENDERER_PLACE}.`);
     } else if (!redirectsSafe) {
         const headed = hosts.filter(customCredentialHeader);
-        if (headed.length) parts.push(`If ${one ? "the host" : listNames(headed.map(serviceLabel))} redirects the upload to another site, the proxy forwards ${one ? "this key" : "those keys"} there too.`);
+        if (headed.length) parts.push(`If ${one ? "the host" : humanFriendlyJoin(headed.map(serviceLabel))} redirects the upload to another site, the proxy forwards ${one ? "this key" : "those keys"} there too.`);
     }
     const limit = proxyBodyLimit(url);
     if (limit != null) parts.push(`Files over ${formatSize(limit, true)} aren't sent through it.`);
@@ -705,7 +630,7 @@ function runsWithoutProxy(service: ServiceType): boolean {
     return web === "direct" || web === "direct-simple" || web === "user";
 }
 
-function toProxyUrl(url: string, service: ServiceType | null = currentAttemptService): string {
+function toProxyUrl(url: string, service: ServiceType | null): string {
     return requestRoute(service) === "proxy" ? viaCorsProxy(url) : url;
 }
 
@@ -881,7 +806,6 @@ interface UploadJob {
     run(job: UploadJob): Promise<boolean>;
     resolve(ok: boolean): void;
     queuedBehind: boolean;
-    fileNames: readonly string[];
     id: number;
     name: string;
     size: number | null;
@@ -897,9 +821,9 @@ let pumping = false;
 
 let droppedJobs = 0;
 
-function enqueueUpload(name: string, run: UploadJob["run"], fileNames: readonly string[], size: number | null = null): Promise<boolean> {
+function enqueueUpload(name: string, run: UploadJob["run"], size: number | null = null): Promise<boolean> {
     return new Promise(resolve => {
-        uploadQueue.push({ run, resolve, queuedBehind: pumping, fileNames, id: nextJobId++, name, size });
+        uploadQueue.push({ run, resolve, queuedBehind: pumping, id: nextJobId++, name, size });
         if (pumping) {
             setUploadState(queueState());
             showToast({ text: `Queued ${name}. It uploads when the current upload is done` });
@@ -1127,7 +1051,7 @@ function pollNativeDownload(): () => void {
     };
 }
 
-async function fetchBlobWithTimeout(url: string, useProxy: boolean, limit: number | null = null, tooLarge = downloadTooLarge): Promise<{ blob: Blob; contentType: string; }> {
+async function fetchBlobWithTimeout(url: string, useProxy: boolean, limit: number | null, tooLarge = downloadTooLarge): Promise<{ blob: Blob; contentType: string; }> {
     const controller = new AbortController();
     activeAbortController = controller;
     const stallMs = getUploadTimeoutMs();
@@ -1165,7 +1089,6 @@ async function fetchBlobWithTimeout(url: string, useProxy: boolean, limit: numbe
             const { done, value } = await reader.read();
             if (done) break;
             resetStallTimeout();
-            if (!value) continue;
             received += value.length;
             if (limit !== null && received > limit) {
                 await reader.cancel().catch(() => { });
@@ -1190,48 +1113,23 @@ async function fetchBlobWithTimeout(url: string, useProxy: boolean, limit: numbe
     }
 }
 
-function getHeaderEntries(headers?: HeadersInit): [string, string][] {
-    if (!headers) return [];
-    if (headers instanceof Headers) return Array.from(headers.entries());
-    if (Array.isArray(headers)) return headers.map(([key, value]) => [key, value]);
-
-    return Object.entries(headers);
-}
-
-class XhrResponse {
-    ok: boolean;
-    headers: Headers;
-    status: number;
-    statusText: string;
-    url: string;
-
-    constructor(private xhr: XMLHttpRequest) {
-        this.status = xhr.status;
-        this.statusText = xhr.statusText;
-        this.url = xhr.responseURL;
-        this.ok = this.status >= 200 && this.status < 300;
-        this.headers = new Headers();
-
-        const rawHeaders = xhr.getAllResponseHeaders();
-        for (const line of rawHeaders.trim().split(/[\r\n]+/)) {
-            if (!line) continue;
-
-            const separatorIndex = line.indexOf(":");
-            if (separatorIndex < 0) continue;
-
-            this.headers.append(line.slice(0, separatorIndex).trim(), line.slice(separatorIndex + 1).trim());
-        }
+function xhrResponse(xhr: XMLHttpRequest): UploadHttpResponse {
+    const headers = new Headers();
+    for (const line of xhr.getAllResponseHeaders().trim().split(/[\r\n]+/)) {
+        const separatorIndex = line.indexOf(":");
+        if (separatorIndex >= 0) headers.append(line.slice(0, separatorIndex).trim(), line.slice(separatorIndex + 1).trim());
     }
+    const text = xhr.responseText;
 
-    async text(): Promise<string> {
-        return typeof this.xhr.response === "string"
-            ? this.xhr.response
-            : this.xhr.responseText;
-    }
-
-    async json(): Promise<unknown> {
-        return parseJsonAnswer(await this.text(), this.headers.get("content-type"));
-    }
+    return {
+        ok: xhr.status >= 200 && xhr.status < 300,
+        status: xhr.status,
+        statusText: xhr.statusText,
+        headers,
+        url: xhr.responseURL,
+        text: async () => text,
+        json: async () => parseJsonAnswer(text, headers.get("content-type"))
+    };
 }
 
 function setXhrUploadProgress(event: ProgressEvent) {
@@ -1272,12 +1170,12 @@ interface RequestTransport {
 
 const SIMPLE_REQUEST_BYTES_PER_SECOND = 256 * 1024;
 
-async function uploadRequestWithTimeout(requestUrl: string, options: RequestInit, { viaProxy, simple, bodyBytes }: RequestTransport): Promise<XhrResponse> {
+async function uploadRequestWithTimeout(requestUrl: string, options: RequestInit, { viaProxy, simple, bodyBytes }: RequestTransport): Promise<UploadHttpResponse> {
     const xhr = new XMLHttpRequest();
     activeXhr = xhr;
     xhrBodySent = false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
-    return new Promise<XhrResponse>((resolve, reject) => {
+    return new Promise<UploadHttpResponse>((resolve, reject) => {
         let bodySent = false;
         let sentAny = false;
         const stallMs = getUploadTimeoutMs();
@@ -1291,7 +1189,7 @@ async function uploadRequestWithTimeout(requestUrl: string, options: RequestInit
 
         xhr.open(options.method || "GET", requestUrl);
 
-        for (const [key, value] of getHeaderEntries(options.headers)) {
+        for (const [key, value] of new Headers(options.headers)) {
             xhr.setRequestHeader(key, value);
         }
 
@@ -1310,7 +1208,7 @@ async function uploadRequestWithTimeout(requestUrl: string, options: RequestInit
         }
         xhr.onload = () => {
             try {
-                resolve(new XhrResponse(xhr));
+                resolve(xhrResponse(xhr));
             } catch (error) {
                 reject(error);
             }
@@ -1481,14 +1379,12 @@ function spoolBytes(file: SpooledFile): ByteSource {
 async function nativeBody(body: RequestBody): Promise<ArrayBuffer | SpoolSource> {
     if (isSpoolPart(body)) return { kind: "spool", id: body.id, offset: body.offset, length: body.size };
     if (isSpooled(body)) return { kind: "spool", id: body.id };
-    if (body.size > SPOOL_MIN_BYTES && canSpool()) {
-        const spool = await spoolFor(body);
-        if (spool) return { kind: "spool", id: spool.id };
-    }
+    const spool = await hashingSpool(body);
+    if (spool) return { kind: "spool", id: spool.id };
     return body.arrayBuffer();
 }
 
-const hashingSpool = (body: Blob) => Native && body.size > SPOOL_MIN_BYTES && canSpool() ? spoolFor(body) : Promise.resolve(null);
+const hashingSpool = (body: Blob) => body.size > SPOOL_MIN_BYTES && canSpool() ? spoolFor(body) : Promise.resolve(null);
 
 async function payloadSha256(body: UploadBody): Promise<string> {
     if (isSpooled(body)) return body.sha256;
@@ -1532,46 +1428,16 @@ async function partOf(body: UploadBody, offset: number, length: number, hashed: 
     return { body: slice, sha256: hashed ? await sha256Hex(await slice.arrayBuffer()) : undefined };
 }
 
-function s3Transport(): S3Transport {
-    const proxied = requestRoute(ServiceType.S3) === "proxy";
-    return {
-        request: serviceUploadRequest,
-        proxied,
-        proxyLimit: proxied ? proxyBodyLimit(getActiveCorsProxyUrl()) : null,
-        corsHeaders: !Native,
-        bucketCors: !Native && !proxied,
-        answeredDirect: () => !lastOutcome?.rerouted && !attemptProxy,
-        multipartBlocked: canMultipart() ? null : MULTIPART_RESTART_TEXT,
-        payloadSha256,
-        async hashReadsWhole(body) {
-            return !isSpooled(body) && !await hashingSpool(body);
-        },
-        async prepare(body) {
-            if (Native && !isSpooled(body)) await spoolFor(body);
-        },
-        approve: approveOrigin,
-        part: partOf,
-        async abort(url, headers) {
-            if (!Native) return rendererCleanupRequest(url, headers, proxied && requestRoute(ServiceType.S3) === "proxy");
-            const result = await Native.cleanupRequest({ url, method: "DELETE", headers, insecureOrigin: insecureOriginFor(url) });
-            if (!result.success) throw new Error(result.error || "Unknown error");
-            return result.status ?? 0;
-        },
-        retry: retryRequest,
-        checkCancel() {
-            if (cancelRequested) throw new UploadCancelledError();
-        },
-        ownRetries() {
-            requestsRetried = true;
-        },
-        parts(state) {
-            multipart = state;
-            if (state) setUploadState({ phase: "uploading", status: uploadingStatus(), ...state.part === 1 && !state.done && { percent: 0, transferredBytes: 0, totalBytes: state.total } });
-        },
-        uploaded({ url, endpoint, bucket }) {
-            attemptKept = { deletion: { kind: "s3", url }, endpointOrigin: new URL(url).origin, s3: { endpoint, bucket } };
-        }
-    };
+async function abortMultipart(url: string, headers: Record<string, string>, proxied: boolean): Promise<number> {
+    if (!Native) return rendererCleanupRequest(url, headers, proxied && requestRoute(ServiceType.S3) === "proxy");
+    const result = await Native.cleanupRequest({ url, method: "DELETE", headers, insecureOrigin: insecureOriginFor(url) });
+    if (!result.success) throw new Error(result.error || "Unknown error");
+    return result.status ?? 0;
+}
+
+function showParts(state: MultipartState | null): void {
+    multipart = state;
+    if (state) setUploadState({ phase: "uploading", status: uploadingStatus(), ...state.part === 1 && !state.done && { percent: 0, transferredBytes: 0, totalBytes: state.total } });
 }
 
 type NativeUploadRequestOptions = Omit<import("../native").CustomUploadRequestOptions, "url" | "insecureOrigin">;
@@ -1735,7 +1601,7 @@ interface BlockCause {
 
 function blockedCause(result: NativeUploadResult): BlockCause | null {
     if (result.success) return result.block ? { kind: "blocked", page: result.status } : null;
-    const failure = result.failure as UploadFailure | undefined;
+    const { failure } = result;
     if (!failure?.kind || !PROXY_RETRY_KINDS.has(failure.kind)) return null;
     return { kind: failure.kind === "blocked" ? "blocked" : "unreachable", code: failure.code, addresses: failure.addresses };
 }
@@ -1839,7 +1705,7 @@ async function decideDesktopProxy({ service, url, options, bodyBytes, proxyRetry
             return refuse("your proxy may forward this host's credentials on a redirect");
         }
     }
-    if (!needsOriginConfirmation(service)) return { ok: true };
+    if (!requiresCredentials(service)) return { ok: true };
     if (rerunConfirmed?.service === service && rerunConfirmed.origin === target.origin) return { ok: true };
     if (!alwaysRetryAllowed(service, target.origin) && !canOfferOriginRetry(service, target.origin)) return refuse(NOT_CONFIRMED);
     if (info.web === "user" && cause && isDnsCode(cause.code) && !await proxyCanReach(target.origin)) {
@@ -1850,7 +1716,7 @@ async function decideDesktopProxy({ service, url, options, bodyBytes, proxyRetry
 }
 
 function proxyFirstHere(service: ServiceType, origin: string): boolean {
-    if (needsOriginConfirmation(service)) return false;
+    if (requiresCredentials(service)) return false;
     const proxy = proxyFirstEntry(origin);
     if (proxy == null) return false;
     if (proxyConsentGiven() && proxy === proxyKey(getActiveCorsProxyUrl())) return true;
@@ -1923,9 +1789,7 @@ async function nativeServiceRequest(url: string, options: ServiceRequestOptions,
     if (pinned || confirmed || proxyFirst) {
         const gate = await decideDesktopProxy({ service, url, options: anonymousOptions.options, bodyBytes, proxyRetry, cause: null });
         if (gate.ok) {
-            if (confirmed && !pinned) {
-                pinnedOrigins.add(origin);
-            }
+            if (confirmed) pinnedOrigins.add(origin);
             if (proxyFirst || confirmed) setUploadState({ status: `Uploading through the CORS proxy (${host} was blocked on this network)...` });
             const outcome = await proxiedNativeRequest(url, anonymousOptions, fileBlob, { service, idempotent, blockedHost: host, remember: null, bodyBytes });
             if ("response" in outcome) return outcome.response;
@@ -1953,7 +1817,7 @@ async function nativeServiceRequest(url: string, options: ServiceRequestOptions,
     setUploadState({ status: `${why}. Retrying through the CORS proxy (${describeProxy(active).host})...`, percent: 0, transferredBytes: 0 });
     restartAttemptMonitor();
     pinnedOrigins.add(origin);
-    const remember = cause.kind === "blocked" && !needsOriginConfirmation(service) ? origin : null;
+    const remember = cause.kind === "blocked" && !requiresCredentials(service) ? origin : null;
     const outcome = await proxiedNativeRequest(url, anonymousOptions, fileBlob, { service, idempotent, blockedHost: host, remember, bodyBytes });
     if ("response" in outcome) return outcome.response;
     const direct = result.success ? `${host} answered ${result.status} (a block page)` : result.error || "Upload failed";
@@ -1995,33 +1859,21 @@ let currentItem: OfferItem | null = null;
 
 let rerunConfirmed: { service: ServiceType; origin: string; } | null = null;
 
-const CREDENTIAL_KEYS: Partial<Record<ServiceType, string[]>> = {
-    [ServiceType.ZIPLINE]: ["ziplineToken"],
-    [ServiceType.NEST]: ["nestToken"],
-    [ServiceType.EZHOST]: ["ezHostKey"],
-    [ServiceType.ENCRYPTINGHOST]: ["encryptingHostKey"],
-    [ServiceType.S3]: ["s3AccessKeyId", "s3SecretAccessKey", "s3SessionToken"],
-    [ServiceType.PIXELVAULT]: ["pixelVaultKey"],
-    [ServiceType.PIXELDRAIN]: ["pixelDrainKey"],
-    [ServiceType.WEBDAV]: ["webdavUsername", "webdavPassword"],
-    [ServiceType.SHAREX]: ["sharexConfig"]
-};
-
-const CREDENTIAL_NAMES: Partial<Record<ServiceType, string>> = {
-    [ServiceType.ZIPLINE]: "your Zipline token",
-    [ServiceType.NEST]: "your Nest token",
-    [ServiceType.EZHOST]: "your E-Z Host key",
-    [ServiceType.ENCRYPTINGHOST]: "your Encrypting.host key",
-    [ServiceType.S3]: "your S3 request signatures",
-    [ServiceType.PIXELVAULT]: "your PixelVault key",
-    [ServiceType.PIXELDRAIN]: "your PixelDrain key",
-    [ServiceType.WEBDAV]: "your WebDAV login",
-    [ServiceType.SHAREX]: "your custom uploader's headers and fields"
+const CREDENTIALS: Partial<Record<ServiceType, { name: string; keys: string[]; }>> = {
+    [ServiceType.ZIPLINE]: { name: "your Zipline token", keys: ["ziplineToken"] },
+    [ServiceType.NEST]: { name: "your Nest token", keys: ["nestToken"] },
+    [ServiceType.EZHOST]: { name: "your E-Z Host key", keys: ["ezHostKey"] },
+    [ServiceType.ENCRYPTINGHOST]: { name: "your Encrypting.host key", keys: ["encryptingHostKey"] },
+    [ServiceType.S3]: { name: "your S3 request signatures", keys: ["s3AccessKeyId", "s3SecretAccessKey", "s3SessionToken"] },
+    [ServiceType.PIXELVAULT]: { name: "your PixelVault key", keys: ["pixelVaultKey"] },
+    [ServiceType.PIXELDRAIN]: { name: "your PixelDrain key", keys: ["pixelDrainKey"] },
+    [ServiceType.WEBDAV]: { name: "your WebDAV login", keys: ["webdavUsername", "webdavPassword"] },
+    [ServiceType.SHAREX]: { name: "your custom uploader's headers and fields", keys: ["sharexConfig"] }
 };
 
 function credentialPrint(service: ServiceType): Promise<string> {
     const values = (settings.plain ?? {}) as Record<string, unknown>;
-    return sha256Hex(JSON.stringify((CREDENTIAL_KEYS[service] ?? []).map(key => values[key] ?? null)));
+    return sha256Hex(JSON.stringify((CREDENTIALS[service]?.keys ?? []).map(key => values[key] ?? null)));
 }
 
 function endpointOriginOf(service: ServiceType): string | null {
@@ -2131,7 +1983,7 @@ async function openOriginRetry(offer: OriginOffer): Promise<void> {
     const proxy = describeProxy(getActiveCorsProxyUrl());
     const { host } = new URL(offer.origin);
     const n = offer.items.length;
-    const credential = carriesCredential(offer.service) ? CREDENTIAL_NAMES[offer.service] : undefined;
+    const credential = carriesCredential(offer.service) ? CREDENTIALS[offer.service]?.name : undefined;
     const question = `${serviceLabel(offer.service)} at ${host} is blocked on this network. Retry ${n > 1 ? `these ${n} uploads` : "the upload"} once through the CORS proxy (${proxy.preset ? `${proxy.host}, run by ${proxy.operator}` : proxy.host})? Whoever runs it sees ${n > 1 ? "the files" : "the file"}${credential ? ` and ${credential}` : ""}.`;
     const answer = await askOriginRetry(host, question);
     if (!answer.retry) {
@@ -2164,7 +2016,7 @@ async function openOriginRetry(offer: OriginOffer): Promise<void> {
         } finally {
             rerunConfirmed = null;
         }
-    }, items.flatMap(i => i.kind === "file" ? [i.file.name] : []), offerSize);
+    }, offerSize);
 }
 
 const announcedProxyHosts = new Set<string>();
@@ -2201,7 +2053,7 @@ async function fetchFileThroughProxy<T>(source: string, download: (viaProxy: str
     }
 }
 
-type ServiceRequestOptions = Omit<NativeUploadRequestOptions, "fileContentType"> & Pick<S3RequestOptions, "idempotent" | "proxyRetry">;
+type ServiceRequestOptions = Omit<NativeUploadRequestOptions, "fileContentType"> & { idempotent?: boolean; proxyRetry?: "deny"; };
 
 interface RequestOutcome {
     status?: number;
@@ -2300,12 +2152,12 @@ async function sendServiceRequest(url: string, options: ServiceRequestOptions, f
         throw new Error("This request was signed for a direct connection, so it isn't sent through the CORS proxy. Try the upload again");
     }
     rerouted = pinned;
-    let response: XhrResponse;
+    let response: UploadHttpResponse;
     try {
         response = await send(viaProxy);
     } catch (error) {
         const preflightFailed = error instanceof TransportError && error.kind === "network" && !error.sentAny;
-        if (!(preflightFailed && !pinned && route === "direct" && service && SERVICES[service]?.web === "direct"
+        if (!(preflightFailed && !pinned && service && SERVICES[service]?.web === "direct"
             && proxyFor(service) && withinProxyLimit(bodyBytes) && !cancelRequested && proxyRetry !== "deny")) throw error;
         logger.warn(`${label} refused a direct request. Retrying once through the CORS proxy`);
         setUploadState({ status: `${label} refused a direct request. Retrying through the CORS proxy...` });
@@ -2345,18 +2197,18 @@ function isSingleHttpUrl(value: string): boolean {
 // new URL().href would percent-encode zero-width characters
 export function validateUploadedUrl(raw: unknown, service: ServiceType): string {
     const value = typeof raw === "string" ? trimAscii(raw) : "";
-    const inner = /^\[[^\]]*\]\(([^)]*)\)$/.exec(value)?.[1];
-    if (isSingleHttpUrl(inner ?? value)) return value;
+    if (isSingleHttpUrl(linkOf(value))) return value;
     throw new Error(`${serviceLabel(service)} returned an unexpected response`);
+}
+
+function requireLink<T>(url: T): NonNullable<T> {
+    if (!url) throw new Error("The host returned no link");
+    return url as NonNullable<T>;
 }
 
 async function readPlainTextUrl(response: UploadHttpResponse): Promise<string> {
     if (!response.ok) throw await httpFailure(response);
-    const text = trimAscii(await response.text());
-    if (!text) {
-        throw new Error("The host returned no link");
-    }
-    return text;
+    return requireLink(trimAscii(await response.text()));
 }
 
 async function readTextAndJson(response: UploadHttpResponse): Promise<{ text: string; json: unknown; }> {
@@ -2364,9 +2216,7 @@ async function readTextAndJson(response: UploadHttpResponse): Promise<{ text: st
     let json: unknown = null;
     try {
         json = text ? JSON.parse(text) : null;
-    } catch {
-        json = null;
-    }
+    } catch { }
     return { text, json };
 }
 
@@ -2407,7 +2257,7 @@ interface KeptNow extends Kept {
     anonymous: boolean;
 }
 
-const keptNow = (): KeptNow => ({ ...attemptKept, anonymous: Boolean((attemptProxy as AttemptProxy | null)?.anonymous) });
+const keptNow = (): KeptNow => ({ ...attemptKept, anonymous: Boolean(attemptProxy?.anonymous) });
 
 const linkOf = (url: string) => /^\[[^\]]*\]\(([^)]*)\)$/.exec(url)?.[1] ?? url;
 
@@ -2457,13 +2307,7 @@ async function uploadToShareX(fileBlob: UploadBody, filename: string): Promise<s
         ? { method, headers, bodyType: "binary", filename }
         : { method, headers, bodyType: "multipart", fields: args, fileFieldName: config.FileFormName || "file", filename }, fileBlob);
 
-    const responseText = await response.text();
-    let responseJson: unknown = null;
-    try {
-        responseJson = responseText ? JSON.parse(responseText) : null;
-    } catch {
-        responseJson = null;
-    }
+    const { text: responseText, json: responseJson } = await readTextAndJson(response);
 
     const answer = { config, url: response.url, headers: response.headers, filename };
     if (!response.ok) {
@@ -2597,8 +2441,7 @@ async function readZiplineAnswer(response: UploadHttpResponse): Promise<ZiplineA
 // Zipline v4 returns { files: [{ url }] }, v3.x returns { files: ["url"] }
 async function ziplineLink(data: ZiplineAnswer): Promise<string> {
     const first = data.files?.[0];
-    const url = typeof first === "string" ? first : first?.url;
-    if (!url) throw new Error("The host returned no link");
+    const url = requireLink(typeof first === "string" ? first : first?.url);
     if (typeof first === "object" && first?.pending === true) await waitForZiplineFile(url);
     return url;
 }
@@ -2717,15 +2560,9 @@ async function uploadToZipline(fileBlob: UploadBody, filename: string): Promise<
 }
 
 async function uploadToNest(fileBlob: UploadBody, filename: string): Promise<string> {
-    const { nestToken } = settings.store;
-
-    if (!nestToken) {
-        throw new Error("Nest token is required");
-    }
-
     const response = await postMultipart("https://nest.rip/api/files/upload", fileBlob, filename, {
         headers: {
-            "Authorization": nestToken
+            "Authorization": settings.store.nestToken!
         }
     });
 
@@ -2733,27 +2570,12 @@ async function uploadToNest(fileBlob: UploadBody, filename: string): Promise<str
 
     const data = await response.json() as { fileURL?: string; };
 
-    if (data.fileURL) {
-        return data.fileURL;
-    }
-
-    throw new Error("The host returned no link");
+    return requireLink(data.fileURL);
 }
 
 const ENCRYPTING_HOST_STYLES = ["query", "param", "fakelink", "embed", "zws"] as const;
 
-type EncryptingHostUrlStyle = typeof ENCRYPTING_HOST_STYLES[number];
-
-const isEncryptingHostStyle = (style: string): style is EncryptingHostUrlStyle => (ENCRYPTING_HOST_STYLES as readonly string[]).includes(style);
-
-function getEncryptingHostConfig(): {
-    key: string;
-    urlStyle: EncryptingHostUrlStyle;
-    domains: string[];
-    title: string;
-    color: string;
-    fakelink: string;
-} {
+async function uploadToEncryptingHost(fileBlob: UploadBody, filename: string): Promise<string> {
     const {
         encryptingHostKey,
         encryptingHostUrlStyle,
@@ -2763,46 +2585,25 @@ function getEncryptingHostConfig(): {
         encryptingHostFakelink
     } = settings.store;
 
-    const key = encryptingHostKey?.trim() || "";
-    if (!key) {
-        throw new Error("Encrypting.host API key is required");
-    }
-
     const style = encryptingHostUrlStyle || "query";
-    if (!isEncryptingHostStyle(style)) {
+    if (!(ENCRYPTING_HOST_STYLES as readonly string[]).includes(style)) {
         throw new Error("Invalid Encrypting.host URL style");
     }
 
-    const domainsRaw = encryptingHostDomains?.trim() || "[\"normal\"]";
-
-    return {
-        key,
-        urlStyle: style,
-        domains: parseEncryptingHostDomains(domainsRaw),
-        title: style === "embed" || style === "zws" ? encryptingHostTitle?.trim() || "" : "",
-        color: style === "embed" ? encryptingHostColor?.trim().replace(/^#/, "") || "" : "",
-        fakelink: style === "fakelink" ? encryptingHostFakelink?.trim() || "" : ""
-    };
-}
-
-async function uploadToEncryptingHost(fileBlob: UploadBody, filename: string): Promise<string> {
-    const config = getEncryptingHostConfig();
+    const domains = parseEncryptingHostDomains(encryptingHostDomains?.trim() || "[\"normal\"]");
+    const title = style === "embed" || style === "zws" ? encryptingHostTitle?.trim() : "";
+    const color = style === "embed" ? encryptingHostColor?.trim().replace(/^#/, "") : "";
+    const fakelink = style === "fakelink" ? encryptingHostFakelink?.trim() : "";
 
     const fields: Record<string, string> = {
         password: randomHexBytes(16),
-        userKey: config.key,
-        urlStyle: config.urlStyle,
-        domains: JSON.stringify(config.domains)
+        userKey: encryptingHostKey!.trim(),
+        urlStyle: style,
+        domains: JSON.stringify(domains),
+        ...title && { title },
+        ...color && { color },
+        ...fakelink && { fakelink }
     };
-    if (config.title) {
-        fields.title = config.title;
-    }
-    if (config.color) {
-        fields.color = config.color;
-    }
-    if (config.fakelink) {
-        fields.fakelink = config.fakelink;
-    }
 
     const response = await postMultipart("https://encrypting.host/upload", fileBlob, filename, {
         fields
@@ -2815,12 +2616,7 @@ async function uploadToEncryptingHost(fileBlob: UploadBody, filename: string): P
 
     const parsedUrl = typeof data?.url === "string" ? trimAscii(data.url) : "";
     const fallbackUrl = trimAscii(text).startsWith("http") ? trimAscii(text) : "";
-    const url = parsedUrl || fallbackUrl;
-    if (!url) {
-        throw new Error("The host returned no link");
-    }
-
-    return url;
+    return requireLink(parsedUrl || fallbackUrl);
 }
 
 const pixelDrainErrors: Record<string, string> = {
@@ -2832,8 +2628,6 @@ export interface ConfigProblem {
     kind: "credentials" | "platform" | "consent";
     message: string;
 }
-
-const PROBLEM_ORDER: readonly ConfigProblem["kind"][] = ["platform", "credentials", "consent"];
 
 export function getServiceConfigProblems(service: ServiceType): ConfigProblem[] {
     if (!Object.hasOwn(SERVICES, service)) return [{ kind: "platform", message: `${service} isn't a host this version of BigFileUpload knows` }];
@@ -2850,12 +2644,7 @@ export function getServiceConfigProblems(service: ServiceType): ConfigProblem[] 
 }
 
 export function getServiceConfigError(service: ServiceType): string | null {
-    const problems = getServiceConfigProblems(service);
-    for (const kind of PROBLEM_ORDER) {
-        const problem = problems.find(p => p.kind === kind);
-        if (problem) return problem.message;
-    }
-    return null;
+    return getServiceConfigProblems(service)[0]?.message ?? null;
 }
 
 export const isHostConfigured = (service: ServiceType) => !getServiceConfigProblems(service).some(p => p.kind === "credentials");
@@ -2889,13 +2678,15 @@ export function uploadBlocker(): string | null {
     return plan.order.length ? null : noHostMessage(primary, anyFile, plan);
 }
 
+export function toastUploadBlocker(): boolean {
+    const blocked = uploadBlocker();
+    if (blocked) showToast({ text: blocked, variant: "critical", duration: 8000 });
+    return blocked !== null;
+}
+
 async function uploadToEzHost(fileBlob: UploadBody, filename: string): Promise<string> {
-    const { ezHostKey } = settings.store;
-
-    if (!ezHostKey) throw new Error("E-Z Host API key is required");
-
     const response = await postMultipart("https://api.e-z.host/files", fileBlob, filename, {
-        headers: { key: ezHostKey }
+        headers: { key: settings.store.ezHostKey! }
     });
 
     if (!response.ok) throw await httpFailure(response);
@@ -2905,9 +2696,7 @@ async function uploadToEzHost(fileBlob: UploadBody, filename: string): Promise<s
         throw new Error(typeof data?.error === "string" && cleanHostText(data.error) || "Upload failed");
     }
 
-    const url = data.imageUrl || data.rawUrl;
-    if (!url) throw new Error("The host returned no link");
-    return url;
+    return requireLink(data.imageUrl || data.rawUrl);
 }
 
 async function uploadToCatbox(fileBlob: UploadBody, filename: string): Promise<string> {
@@ -2934,10 +2723,6 @@ function catboxFileName(url: string): string | null {
 }
 
 async function uploadTo0x0(fileBlob: UploadBody, filename: string): Promise<string> {
-    if (!Native) {
-        throw new Error("0x0.st doesn't work on Vencord Web");
-    }
-
     const { zeroX0Secret, zeroX0Expiry } = settings.store;
     const fields: Record<string, string> = {};
     if (zeroX0Secret) fields.secret = "";
@@ -2951,7 +2736,7 @@ async function uploadTo0x0(fileBlob: UploadBody, filename: string): Promise<stri
     const token = response.headers.get("x-token")?.trim();
     if (token && URL.canParse(url) && new URL(url).hostname === "0x0.st") {
         rememberSessionSecret(token);
-        attemptKept = { deletion: { kind: "0x0", url: trimAscii(url), token } };
+        attemptKept = { deletion: { kind: "0x0", url, token } };
     }
     return url;
 }
@@ -3004,7 +2789,6 @@ export function gofileGuestToken(): string | undefined {
 
 async function uploadToGofile(fileBlob: UploadBody, filename: string): Promise<string> {
     const { gofileToken, gofileReuseGuestToken } = settings.store;
-    await loadGofileGuest();
     const guest = gofileGuestToken();
 
     const send = (token: string | undefined) => postMultipart("https://upload.gofile.io/uploadfile", fileBlob, filename, {
@@ -3016,7 +2800,7 @@ async function uploadToGofile(fileBlob: UploadBody, filename: string): Promise<s
     let response = await send(sent);
     let direct = gofileAnsweredDirect();
 
-    if (guest && !account && sent === guest && direct && isGofileTokenRejection(response.status, gofileStatus(await response.text()))) {
+    if (guest && direct && isGofileTokenRejection(response.status, gofileStatus(await response.text()))) {
         rememberSessionSecret(guest);
         if (storedGofileGuestToken() === guest) saveGofileGuestToken("");
         if (gofileResent) {
@@ -3058,9 +2842,7 @@ async function uploadToGofile(fileBlob: UploadBody, filename: string): Promise<s
             || (status ? `GoFile error: ${status}` : "Upload failed"));
     }
 
-    const url = data.data?.downloadPage || (data.data?.code ? `https://gofile.io/d/${data.data.code}` : "");
-    if (!url) throw new Error("The host returned no link");
-    return url;
+    return requireLink(data.data?.downloadPage || (data.data?.code ? `https://gofile.io/d/${data.data.code}` : ""));
 }
 
 async function uploadToTmpfiles(fileBlob: UploadBody, filename: string): Promise<string> {
@@ -3091,13 +2873,10 @@ async function uploadToBuzzheavier(fileBlob: UploadBody, filename: string): Prom
         filename
     }, fileBlob);
 
-    const text = await response.text();
+    const { text, json } = await readTextAndJson(response);
     if (!response.ok) throw await httpFailure(response, text);
 
-    let data: { code?: number; data?: { id?: unknown; }; } | null = null;
-    try {
-        data = JSON.parse(text);
-    } catch { }
+    const data = json as { code?: number; data?: { id?: unknown; }; } | null;
     const id = data?.data?.id;
     if (data?.code !== 201 || typeof id !== "string" || !id) throw new Error("The host returned no link");
     return `https://buzzheavier.com/${encodeURIComponent(id)}`;
@@ -3125,15 +2904,9 @@ async function uploadToFilebin(fileBlob: UploadBody, filename: string): Promise<
 }
 
 async function uploadToPixelVault(fileBlob: UploadBody, filename: string): Promise<string> {
-    const { pixelVaultKey } = settings.store;
-
-    if (!pixelVaultKey?.trim()) {
-        throw new Error("PixelVault upload key is required");
-    }
-
     const response = await postMultipart("https://pixelvault.co/", fileBlob, filename, {
         headers: {
-            Authorization: pixelVaultKey.trim()
+            Authorization: settings.store.pixelVaultKey!.trim()
         }
     });
 
@@ -3142,21 +2915,13 @@ async function uploadToPixelVault(fileBlob: UploadBody, filename: string): Promi
 
     if (!response.ok) throw await httpFailure(response, text);
 
-    const url = data?.resource || data?.url || trimAscii(text);
-    if (!url) {
-        throw new Error("The host returned no link");
-    }
-
-    return url;
+    return requireLink(data?.resource || data?.url || trimAscii(text));
 }
 
 async function uploadToPixelDrain(fileBlob: UploadBody, filename: string): Promise<string> {
-    const key = settings.store.pixelDrainKey?.trim();
-    if (!key) throw new Error(PIXELDRAIN_KEY_REQUIRED);
-
     const response = await serviceUploadRequest(`https://pixeldrain.com/api/file/${encodeURIComponent(filename)}`, {
         method: "PUT",
-        headers: { Authorization: `Basic ${utf8ToBase64(`:${key}`)}` },
+        headers: { Authorization: `Basic ${toBase64(`:${settings.store.pixelDrainKey!.trim()}`)}` },
         bodyType: "binary",
         filename
     }, fileBlob);
@@ -3178,16 +2943,12 @@ async function uploadToPixelDrain(fileBlob: UploadBody, filename: string): Promi
     return `https://pixeldrain.com/u/${data.id}`;
 }
 
-function utf8ToBase64(input: string): string {
-    return btoa(String.fromCharCode(...new TextEncoder().encode(input)));
-}
-
-function buildWebdavAuthHeader(): string | null {
+function webdavAuth(): Record<string, string> {
     const { webdavUsername, webdavPassword } = settings.store;
     if (webdavUsername?.trim() && webdavPassword?.trim()) {
-        return `Basic ${utf8ToBase64(`${webdavUsername.trim()}:${webdavPassword.trim()}`)}`;
+        return { Authorization: `Basic ${toBase64(`${webdavUsername.trim()}:${webdavPassword.trim()}`)}` };
     }
-    return null;
+    return {};
 }
 
 class CommittedUploadError extends Error {
@@ -3213,20 +2974,18 @@ export function parseWebdavRoot(webdavUrl: string): { base: string; sharePrefix:
 }
 
 async function createWebdavShare(relativePath: string, serverOrigin: string, filename: string, options: {
-    webdavServerType: string; webdavShareType: string; authHeader: string | null;
+    webdavServerType: string; webdavShareType: string; auth: Record<string, string>;
 }): Promise<string> {
-    const { webdavServerType, webdavShareType, authHeader } = options;
+    const { webdavServerType, webdavShareType, auth } = options;
 
     const ocsVersion = webdavServerType === "owncloud" ? "v1" : "v2";
     const ocsUrl = `${serverOrigin}/ocs/${ocsVersion}.php/apps/files_sharing/api/v1/shares?format=json`;
 
     const ocsHeaders: Record<string, string> = {
         "OCS-APIRequest": "true",
-        "Content-Type": "application/x-www-form-urlencoded"
+        "Content-Type": "application/x-www-form-urlencoded",
+        ...auth
     };
-    if (authHeader) {
-        ocsHeaders.Authorization = authHeader;
-    }
 
     const body = new URLSearchParams({
         path: `/${relativePath}`,
@@ -3261,8 +3020,6 @@ async function createWebdavShare(relativePath: string, serverOrigin: string, fil
 
     const shareUrl = shareData.ocs?.data?.url;
 
-    const shareType = webdavShareType || "share-page";
-
     const token = encodeURIComponent(shareToken);
     const sharePageUrl = shareUrl || `${serverOrigin}/s/${token}`;
     const indexPhp = typeof shareUrl === "string" && shareUrl.includes(`/index.php/s/${shareToken}`) ? "/index.php" : "";
@@ -3270,11 +3027,11 @@ async function createWebdavShare(relativePath: string, serverOrigin: string, fil
         ? `${serverOrigin}/remote.php/dav/public-files/${token}`
         : `${serverOrigin}${indexPhp}/s/${token}/download`;
 
-    if (shareType === "direct-download") {
+    if (webdavShareType === "direct-download") {
         return directDownloadUrl;
     }
 
-    if (shareType === "markdown") {
+    if (webdavShareType === "markdown") {
         return `[${markdownLabel(filename)}](${directDownloadUrl})`;
     }
 
@@ -3282,20 +3039,15 @@ async function createWebdavShare(relativePath: string, serverOrigin: string, fil
 }
 
 function uniqueWebdavName(filename: string): string {
-    const safe = filename.replace(/[\\/\x00-\x1f]/g, "_");
-    const dot = safe.lastIndexOf(".");
-    const [stem, ext] = dot > 0 ? [safe.slice(0, dot), safe.slice(dot)] : [safe, ""];
+    const dot = filename.lastIndexOf(".");
+    const [stem, ext] = dot > 0 ? [filename.slice(0, dot), filename.slice(dot)] : [filename, ""];
     return `${stem}-${Date.now().toString(36)}${randomHexBytes(3)}${ext}`;
 }
 
 async function uploadToWebdav(fileBlob: UploadBody, filename: string): Promise<string> {
-    const { webdavUrl, webdavServerType, webdavDirectory, webdavShareType } = settings.store;
-
-    if (!webdavUrl) {
-        throw new Error("WebDAV server URL is required");
-    }
-
-    const authHeader = buildWebdavAuthHeader();
+    const { webdavServerType, webdavDirectory, webdavShareType } = settings.store;
+    const webdavUrl = settings.store.webdavUrl!;
+    const auth = webdavAuth();
     const baseUrl = webdavUrl.replace(/\/+$/, "");
     const dir = (webdavDirectory || "").replace(/^\/+|\/+$/g, "");
     const encodedDir = dir ? dir.split("/").map(encodeURIComponent).join("/") + "/" : "";
@@ -3310,11 +3062,9 @@ async function uploadToWebdav(fileBlob: UploadBody, filename: string): Promise<s
 
     const requestHeaders: Record<string, string> = {
         "Content-Type": fileBlob.type || "application/octet-stream",
-        ...(Native || toProxyUrl(baseUrl, ServiceType.WEBDAV) !== baseUrl ? { "If-None-Match": "*" } : {})
+        ...(Native || toProxyUrl(baseUrl, ServiceType.WEBDAV) !== baseUrl ? { "If-None-Match": "*" } : {}),
+        ...auth
     };
-    if (authHeader) {
-        requestHeaders.Authorization = authHeader;
-    }
 
     const put = async () => {
         const name = uniqueWebdavName(filename);
@@ -3352,7 +3102,7 @@ async function uploadToWebdav(fileBlob: UploadBody, filename: string): Promise<s
     if (cancelRequested) throw new CommittedUploadError(`Cancelled before WebDAV shared ${sharePath}`, privateUrl);
     committedStage = true;
     try {
-        return validateUploadedUrl(await createWebdavShare(sharePath, root.base, filename, { webdavServerType, webdavShareType, authHeader }), ServiceType.WEBDAV);
+        return validateUploadedUrl(await createWebdavShare(sharePath, root.base, filename, { webdavServerType, webdavShareType, auth }), ServiceType.WEBDAV);
     } catch (error) {
         const reason = error instanceof Error ? error.message : "Unknown error";
         throw new CommittedUploadError(`File uploaded to WebDAV (${sharePath}), but sharing it failed: ${reason}. No other host was tried`, privateUrl, cancelRequested);
@@ -3366,7 +3116,7 @@ const uploaders: Record<ServiceType, (fileBlob: UploadBody, filename: string) =>
     [ServiceType.NEST]: uploadToNest,
     [ServiceType.EZHOST]: uploadToEzHost,
     [ServiceType.ENCRYPTINGHOST]: uploadToEncryptingHost,
-    [ServiceType.S3]: (fileBlob, filename) => uploadToS3(fileBlob, filename, s3Transport()),
+    [ServiceType.S3]: uploadToS3,
     [ServiceType.CATBOX]: uploadToCatbox,
     [ServiceType.ZEROX0]: uploadTo0x0,
     [ServiceType.LITTERBOX]: uploadToLitterbox,
@@ -3384,11 +3134,6 @@ const uploaders: Record<ServiceType, (fileBlob: UploadBody, filename: string) =>
 async function uploadToService(serviceType: ServiceType, fileBlob: UploadBody, filename: string): Promise<string> {
     if (!Object.hasOwn(uploaders, serviceType)) throw new Error("Unknown service type");
     return uploaders[serviceType](fileBlob, filename);
-}
-
-function applyEmbedProxy(url: string, ctx: EmbedContext, wait?: EmbedWait): Promise<string> {
-    if (insecureHttpOrigin(ctx.service)) return Promise.resolve(url);
-    return wrapForEmbed(url, ctx, wait);
 }
 
 let stopEmbedWait: (() => void) | null = null;
@@ -3413,7 +3158,7 @@ async function embedLink(link: string, ctx: EmbedContext): Promise<string> {
     const stopped = new Promise<void>(resolve => { stop = resolve; });
     const shown: { status?: string; } = {};
     try {
-        return await applyEmbedProxy(link, ctx, {
+        return insecureHttpOrigin(ctx.service) ? link : await wrapForEmbed(link, ctx, {
             onWait: name => {
                 shown.status = uploadState.status;
                 stopEmbedWait = stop;
@@ -3520,8 +3265,7 @@ function planUpload(primary: ServiceType, file: FileFacts): UploadPlan {
     const order: ServiceType[] = [];
     const skipped: Skip[] = [];
     for (const service of hosts) {
-        const problems = getServiceConfigProblems(service);
-        const problem = PROBLEM_ORDER.map(kind => problems.find(p => p.kind === kind)).find(Boolean);
+        const problem = getServiceConfigProblems(service)[0];
         const skip: Skip | null = problem ? { service, kind: problem.kind, reason: problem.message, needsProxy: problem.kind === "platform" && needsProxyHere(service) }
             : service !== primary && !httpFallbackAllowed(service) ? { service, kind: "http", reason: `${serviceLabel(service)} is not used as a fallback on this network (unencrypted http)` }
                 : fileSkip(service, file);
@@ -3657,13 +3401,12 @@ export function noHostText(file: FileFacts): string | null {
     const plan = planUpload(primary, file);
     const ceiling = plan.order.length ? nativeCeilingText(file.size) : null;
     if (ceiling) return ceiling;
-    const text = noHostMessage(primary, file, plan);
-    if (text === proxyNoHostMessage(primary, plan)) {
-        const key = `no host\n${text}`;
-        if (announcedSkips.has(key)) return null;
-        announcedSkips.add(key);
-    }
-    return text;
+    const proxyText = proxyNoHostMessage(primary, plan);
+    if (!proxyText) return noHostMessage(primary, file, plan);
+    const key = `no host\n${proxyText}`;
+    if (announcedSkips.has(key)) return null;
+    announcedSkips.add(key);
+    return proxyText;
 }
 
 export function finalizeUploadedUrl(url: string, service: ServiceType): string {
@@ -3677,12 +3420,7 @@ export function finalizeUploadedUrl(url: string, service: ServiceType): string {
 }
 
 function decodeQueryKey(pair: string): string {
-    const key = pair.split("=", 1)[0].replace(/\+/g, " ");
-    try {
-        return decodeURIComponent(key);
-    } catch {
-        return key;
-    }
+    return decodeUrlSegment(pair.split("=", 1)[0].replace(/\+/g, " "));
 }
 
 function isTrackingKey(key: string): boolean {
@@ -3753,10 +3491,10 @@ function divertedNotice({ channelId }: UploadTarget, diverted: number, copied = 
         : `${what} for ${chat} copied. That chat isn't open in the main window`;
 }
 
-function reportStrandedLinks(urls: string[], why: string): void {
-    logger.info(`Links ${why}:\n${urls.join("\n")}`);
+function reportStrandedLinks(urls: string[]): void {
+    logger.info(`Links uploaded but not inserted or copied:\n${urls.join("\n")}`);
     const what = urls.length > 1 ? `${urls.length} links` : "Link";
-    showToast({ text: `${what} ${why}. Copy it from the console (Ctrl+Shift+I)`, duration: 15000 });
+    showToast({ text: `${what} uploaded but not inserted or copied. Copy it from the console (Ctrl+Shift+I)`, duration: 15000 });
 }
 
 export interface UploadTarget {
@@ -3904,7 +3642,7 @@ async function notifyUploadSuccess({ plain, wrapped: finalUrl }: UploadLinks, ta
                         : { text: placed === "send" ? `Upload successful, ${sent()} and copied` : "Upload successful, link copied", variant: "success" });
             } catch (error) {
                 logger.warn("Upload succeeded but clipboard copy failed", error);
-                if (diverted || insertFailed) reportStrandedLinks([finalUrl], "uploaded but not inserted or copied");
+                if (diverted || insertFailed) reportStrandedLinks([finalUrl]);
                 else showToast({ text: "Upload successful, but the link couldn't be copied" });
             }
         }
@@ -3960,10 +3698,6 @@ function pollNativeUploadProgress(): ProgressPoll {
         },
         stalled: () => aborted
     };
-}
-
-function isProxiedNetworkError(error: unknown): boolean {
-    return error instanceof TransportError && error.kind === "network" && error.viaProxy;
 }
 
 function keptUploadEntry(raw: unknown, service: ServiceType, fileName: string, size: number, kept: KeptNow, committed?: CommittedUploadError, cancelled = false): LateCancelEntry | null {
@@ -4230,10 +3964,8 @@ async function uploadWithFallbacks(fileBlob: UploadBody, filename: string, prima
             continue;
         }
 
-        if (service !== primary && rerun) {
-            if (!askBeforeFallback() && !autoFallbackAllowed(primary, service)) continue;
-        } else if (service !== primary) {
-            if (askBeforeFallback()) {
+        if (service !== primary) {
+            if (askBeforeFallback() && !rerun) {
                 const failedLast = attempted.length ? `${attempted[attempted.length - 1]} failed` : primarySkip?.reason;
                 const lead = lateSkip ? failedLast ? `${failedLast}, and ${lateSkip}` : lateSkip : failedLast ?? `${serviceLabel(primary)} failed`;
                 if (!await confirmFallback(service, primary, lead, displayName, fileBlob.size)) throw new UploadCancelledError();
@@ -4241,7 +3973,7 @@ async function uploadWithFallbacks(fileBlob: UploadBody, filename: string, prima
                     withdrawn = serviceLabel(service);
                     continue;
                 }
-            } else if (!autoFallbackAllowed(primary, service)) {
+            } else if (!askBeforeFallback() && !autoFallbackAllowed(primary, service)) {
                 continue;
             }
         }
@@ -4324,7 +4056,7 @@ async function uploadWithFallbacks(fileBlob: UploadBody, filename: string, prima
             } catch (error) {
                 if (error instanceof CommittedUploadError) {
                     if (cancelRequested) throw lateCancelError(error.objectUrl, service, displayName, fileBlob.size, keptNow(), error);
-                    const entry = service === ServiceType.WEBDAV ? keptUploadEntry(error.objectUrl, service, displayName, fileBlob.size, keptNow(), error) : null;
+                    const entry = keptUploadEntry(error.objectUrl, service, displayName, fileBlob.size, keptNow(), error);
                     if (entry) {
                         entry.shareFailed = true;
                         setUploadState({ keptLink: entry });
@@ -4342,7 +4074,8 @@ async function uploadWithFallbacks(fileBlob: UploadBody, filename: string, prima
                 }
 
                 const verdict = judgeFailure(service, error, attemptPoll?.stalled() ?? false);
-                const proxyDown = isProxiedNetworkError(error) && ++proxyNetworkErrors >= 2;
+                const proxiedNetwork = error instanceof TransportError && error.kind === "network" && error.viaProxy;
+                const proxyDown = proxiedNetwork && ++proxyNetworkErrors >= 2;
                 if (verdict?.retry && !retried && !proxyDown && !requestsRetried) {
                     logger.warn(`${serviceLabel(service)} failed, trying it once more: ${error instanceof Error ? error.message : "Unknown error"}`);
                     attemptPoll?.stop();
@@ -4353,7 +4086,7 @@ async function uploadWithFallbacks(fileBlob: UploadBody, filename: string, prima
                     }
                 }
 
-                if (verdict?.down && !isProxiedNetworkError(error)) markHostDown(healthKey(service));
+                if (verdict?.down && !proxiedNetwork) markHostDown(healthKey(service));
                 batchMemory?.failed.add(service);
 
                 const why = proxyNote as ProxyNote | null;
@@ -4423,14 +4156,6 @@ function splitExtension(name: string): [stem: string, ext: string | undefined] {
     const dot = name.lastIndexOf(".");
     const ext = dot > 0 ? name.slice(dot + 1) : "";
     return /^[a-z0-9]{1,16}$/i.test(ext) ? [name.slice(0, dot), ext] : [name, undefined];
-}
-
-function decodeUrlSegment(segment: string): string {
-    try {
-        return decodeURIComponent(segment);
-    } catch {
-        return segment;
-    }
 }
 
 function sanitizeFilename(name: string): string {
@@ -4616,29 +4341,21 @@ async function copyBatchLinks({ urls, divertedUrls, insertFailedUrls = [] }: Bat
     } catch (error) {
         logger.warn("Batch upload succeeded but clipboard copy failed", error);
         const stranded = [...divertedUrls, ...insertFailedUrls];
-        if (stranded.length) reportStrandedLinks(stranded, "uploaded but not inserted or copied");
+        if (stranded.length) reportStrandedLinks(stranded);
         else showToast({ text: "Uploads succeeded, but the links couldn't be copied" });
     }
 }
 
 export async function uploadFile(url: string, target: UploadTarget = { channelId: SelectedChannelStore.getChannelId() }, discordProxyUrl?: string): Promise<void> {
-    const blocked = uploadBlocker();
-    if (blocked) {
-        showToast({ text: blocked, variant: "critical", duration: 8000 });
-        return;
-    }
+    if (toastUploadBlocker()) return;
 
     const segment = URL.canParse(url) ? new URL(url).pathname.split("/").pop() : "";
     const name = sanitizeFilename(segment ? decodeUrlSegment(segment) : "");
-    await enqueueUpload(name || "the file", job => runUrlUpload(url, target, discordProxyUrl, job), name ? [name] : []);
+    await enqueueUpload(name || "the file", job => runUrlUpload(url, target, discordProxyUrl, job));
 }
 
 async function runUrlUpload(url: string, target: UploadTarget, discordProxyUrl: string | undefined, job: UploadJob): Promise<boolean> {
-    const blocked = uploadBlocker();
-    if (blocked) {
-        showToast({ text: blocked, variant: "critical", duration: 8000 });
-        return false;
-    }
+    if (toastUploadBlocker()) return false;
 
     beginUploadSession();
     clearScheduledResetUploadState();
@@ -4774,11 +4491,7 @@ async function runUrlUpload(url: string, target: UploadTarget, discordProxyUrl: 
 }
 
 export async function uploadPickedFile(target: UploadTarget = { channelId: SelectedChannelStore.getChannelId() }): Promise<void> {
-    const blocked = uploadBlocker();
-    if (blocked) {
-        showToast({ text: blocked, variant: "critical", duration: 8000 });
-        return;
-    }
+    if (toastUploadBlocker()) return;
 
     const file = await chooseFile("*/*");
     if (!file) return;
@@ -4792,19 +4505,13 @@ export async function uploadPickedFile(target: UploadTarget = { channelId: Selec
 }
 
 export async function uploadProvidedFiles(files: readonly File[], target: UploadTarget = { channelId: SelectedChannelStore.getChannelId() }): Promise<boolean> {
-    const blocked = uploadBlocker();
-    if (blocked) {
-        showToast({ text: blocked, variant: "critical", duration: 8000 });
-        return false;
-    }
-
-    if (!files.length) return false;
+    if (toastUploadBlocker()) return false;
 
     const uploadFiles = files.filter(file => Boolean(file) && (target.confirmed || isFileTypeAllowed(file)));
     if (!uploadFiles.length) return false;
 
     const name = uploadFiles.length > 1 ? `${uploadFiles.length} files` : uploadFiles[0].name || "the file";
-    return enqueueUpload(name, job => runFilesUpload(uploadFiles, target, job), uploadFiles.map(f => f.name), uploadFiles.reduce((sum, f) => sum + f.size, 0));
+    return enqueueUpload(name, job => runFilesUpload(uploadFiles, target, job), uploadFiles.reduce((sum, f) => sum + f.size, 0));
 }
 
 export function takeoverNoticeText(file: FileFacts, alwaysIntercept: boolean): string | null {
@@ -4847,11 +4554,7 @@ async function firstTakeoverNotice(files: readonly File[]): Promise<boolean> {
 }
 
 async function runFilesUpload(uploadFiles: File[], target: UploadTarget, job: UploadJob): Promise<boolean> {
-    const blocked = uploadBlocker();
-    if (blocked) {
-        showToast({ text: blocked, variant: "critical", duration: 8000 });
-        return false;
-    }
+    if (toastUploadBlocker()) return false;
     if (target.stillWanted && !target.stillWanted()) {
         showToast({ text: `${uploadFiles[0].name} was removed from the draft, so it wasn't uploaded` });
         return false;
@@ -4917,7 +4620,7 @@ async function runFilesUpload(uploadFiles: File[], target: UploadTarget, job: Up
             const n = batch.urls.length;
             await copyBatchLinks(batch, target, `${n} ${n === 1 ? "link" : "links"} copied`);
         } else if (batch && (batch.divertedUrls.length || batch.insertFailedUrls?.length)) {
-            reportStrandedLinks([...batch.divertedUrls, ...batch.insertFailedUrls ?? []], "uploaded but not inserted or copied");
+            reportStrandedLinks([...batch.divertedUrls, ...batch.insertFailedUrls ?? []]);
         }
         if (!cancelled) {
             const message = failureText(error);
@@ -4988,11 +4691,9 @@ async function deleteRequestFor(entry: HistoryEntry, deletion: Deletion): Promis
         case "0x0":
             return { url: deletion.url, method: "POST", headers: { "User-Agent": ZEROX0_USER_AGENT }, form: { token: deletion.token, delete: "" } };
         case "pixeldrain":
-            return { url: `https://pixeldrain.com/api/file/${encodeURIComponent(deletion.id)}`, method: "DELETE", headers: { Authorization: `Basic ${utf8ToBase64(`:${store.pixelDrainKey!.trim()}`)}` } };
-        case "webdav": {
-            const auth = buildWebdavAuthHeader();
-            return { url: deletion.url, method: "DELETE", headers: auth ? { Authorization: auth } : {} };
-        }
+            return { url: `https://pixeldrain.com/api/file/${encodeURIComponent(deletion.id)}`, method: "DELETE", headers: { Authorization: `Basic ${toBase64(`:${store.pixelDrainKey!.trim()}`)}` } };
+        case "webdav":
+            return { url: deletion.url, method: "DELETE", headers: webdavAuth() };
         case "s3":
             return { url: deletion.url, method: "DELETE", headers: await signS3Delete(deletion.url) };
         case "sharex": {

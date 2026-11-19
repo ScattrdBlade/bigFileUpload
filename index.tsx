@@ -13,17 +13,19 @@ import ErrorBoundary from "@components/ErrorBoundary";
 import { CloudUploadIcon, OpenExternalIcon } from "@components/Icons";
 import { Devs } from "@utils/constants";
 import { classNameFactory } from "@utils/css";
+import { useForceUpdater } from "@utils/react";
+import { humanFriendlyJoin } from "@utils/text";
 import definePlugin from "@utils/types";
 import { Channel, CloudUpload } from "@vencord/discord-types";
 import { findByCode, findByCodeLazy, findByProps, findByPropsLazy, findModuleId, wreq } from "@webpack";
 import { ChannelStore, DraftType, EditMessageStore, FluxDispatcher, Menu, PermissionsBits, PermissionStore, React, SelectedChannelStore, showToast, UploadAttachmentStore, UploadManager, useEffect, UserStore, useState, useStateFromStores } from "@webpack/common";
 
 import { migrateSettings, settings } from "./settings";
-import { listNames, serviceLabel, ServiceType } from "./types";
+import { logger, serviceLabel, ServiceType } from "./types";
 import { askToUseHost, copyKeptLink, initCorsProxyPrompt, openPluginSettings, startCorsProxyPrompt } from "./utils/dialogs";
 import { getMediaUrls, mediaUnavailableReason } from "./utils/media";
 import { loadHttpOrigins } from "./utils/proxy";
-import { canAnyHostAccept, cancelAllUploads, cancelCurrentUpload, dismissUploadState, formatSize, getUploadState, hasNativeHelper, isFileTypeAllowed, isPrimaryReady, logger, noHostText, offerHost, primaryNotReadyReason, primaryNotReadyText, removeQueuedUpload, subscribeUploadState, uploadBlocker, uploadFile, uploadPickedFile, uploadProvidedFiles, UploadTarget } from "./utils/upload";
+import { canAnyHostAccept, cancelAllUploads, cancelCurrentUpload, dismissUploadState, formatSize, getUploadState, hasNativeHelper, isFileTypeAllowed, isPrimaryReady, noHostText, offerHost, primaryNotReadyReason, primaryNotReadyText, removeQueuedUpload, subscribeUploadState, toastUploadBlocker, uploadFile, uploadPickedFile, uploadProvidedFiles, UploadTarget } from "./utils/upload";
 
 const cl = classNameFactory("vc-file-upload-");
 
@@ -43,8 +45,6 @@ function markHit(name: keyof typeof patchHits, replace: string) {
         return replace.replace(/\$(\d)/g, (_, i: string) => groups[Number(i) - 1] ?? "");
     };
 }
-
-let uploadAddFilesInterceptor: ((event: unknown) => void) | null = null;
 
 let declinedBatch: { channelId: string; draftType: number; origin: string; files: readonly File[]; at: number; } | null = null;
 
@@ -230,8 +230,8 @@ function isDiscordGeneratedFile(file: File, origin: unknown): boolean {
         || (file.type.startsWith("text/plain") && /^message\.\w+$/i.test(file.name));
 }
 
-function skipInAlwaysInterceptMode(file: File, origin: unknown, overLimit: (f: File) => boolean): boolean {
-    return settings.store.skipDiscordGeneratedFiles && isDiscordGeneratedFile(file, origin) && !overLimit(file);
+function skipInAlwaysInterceptMode(file: File, origin: unknown, guildId: string | null): boolean {
+    return settings.store.skipDiscordGeneratedFiles && isDiscordGeneratedFile(file, origin) && !filesExceedDiscordLimit([file], guildId);
 }
 
 function pickFilesToTake(files: readonly File[], existing: readonly File[], guildId: string | null, draftType: unknown, origin: unknown): File[] {
@@ -240,7 +240,7 @@ function pickFilesToTake(files: readonly File[], existing: readonly File[], guil
     if (!allowed.length) return [];
     const { bypassDiscordUploadOnlyOverLimit: respectLimit, uploadWholeBatch } = settings.store;
     if (!respectLimit && draftType === DraftType.ChannelMessage)
-        return allowed.filter(f => !skipInAlwaysInterceptMode(f, origin, x => filesExceedDiscordLimit([x], guildId)));
+        return allowed.filter(f => !skipInAlwaysInterceptMode(f, origin, guildId));
 
     const draft = existing.length && filesExceedDiscordLimit(existing, guildId) ? [] : existing;
     if (!exceedsTakeLimit(files, guildId) && !(draft.length && filesExceedDiscordLimit([...draft, ...files], guildId))) return [];
@@ -316,7 +316,7 @@ interface GateCall {
 
 function decideGateBypass({ files, guildId, channel, draftType, origin, isThumbnail }: GateCall): boolean {
     if (!pluginActive || isThumbnail || !isOriginEnabled(origin) || !interceptorHealthy) return false;
-    if (!Array.isArray(files) || !files.length || !channel || draftType == null) return false;
+    if (!Array.isArray(files) || !files.length || !channel) return false;
     if (draftType !== DraftType.ChannelMessage && draftType !== DraftType.FirstThreadMessage) return false;
     if (isDeclinedBatch(channel.id, draftType, origin, files, false)) return false;
 
@@ -364,9 +364,7 @@ function extractFilesFromValue(value: unknown): File[] {
         if (entryFile instanceof File) return [entryFile];
 
         const item = "item" in entry && entry.item && typeof entry.item === "object" ? entry.item : null;
-        if (!item || !("file" in item)) return [];
-
-        return item.file instanceof File ? [item.file] : [];
+        return item && "file" in item && item.file instanceof File ? [item.file] : [];
     });
 }
 
@@ -380,16 +378,14 @@ function removeFilesFromValue(value: unknown, toRemove: ReadonlySet<File>): unkn
     });
 }
 
+const PAYLOAD_KEYS = ["files", "uploads", "items"] as const;
+
 function collectPayloadFiles(payload: UploadAddFilesEvent): File[] {
-    return [
-        ...extractFilesFromValue(payload.files),
-        ...extractFilesFromValue(payload.uploads),
-        ...extractFilesFromValue(payload.items)
-    ];
+    return PAYLOAD_KEYS.flatMap(key => extractFilesFromValue(payload[key]));
 }
 
 function removeFilesFromPayload(payload: UploadAddFilesEvent, toRemove: ReadonlySet<File>): void {
-    for (const key of ["files", "uploads", "items"] as const) {
+    for (const key of PAYLOAD_KEYS) {
         if (payload[key] !== undefined) payload[key] = removeFilesFromValue(payload[key], toRemove);
     }
 }
@@ -397,7 +393,7 @@ function removeFilesFromPayload(payload: UploadAddFilesEvent, toRemove: Readonly
 function interceptUploadAddFiles(event: unknown): void {
     try {
         if (!pluginActive) return;
-        if (!event || typeof event !== "object" || !("type" in event)) return;
+        if (!event || typeof event !== "object") return;
 
         const payload = event as UploadAddFilesEvent;
         if (payload.type !== "UPLOAD_ATTACHMENT_ADD_FILES") return;
@@ -414,29 +410,28 @@ function interceptUploadAddFiles(event: unknown): void {
         }
 
         const entries = Array.isArray(payload.files) ? payload.files : [];
-        if (isDeclinedBatch(payload.channelId, payload.draftType, entryField(entries[0], "origin"), dispatched, true)) return;
-        if (!isOriginEnabled(entryField(entries[0], "origin"))) return;
+        const origin = entryField(entries[0], "origin");
+        if (isDeclinedBatch(payload.channelId, payload.draftType, origin, dispatched, true)) return;
+        if (!isOriginEnabled(origin)) return;
+        const isMessage = payload.draftType === DraftType.ChannelMessage || payload.draftType === DraftType.FirstThreadMessage;
+        const thumbnails = new Set(extractFilesFromValue(entries.filter(e => entryField(e, "isThumbnail") === true)));
+        const guildId = getGuildIdForChannel(payload.channelId);
         if (!isPrimaryReady()) {
-            if (payload.draftType === DraftType.ChannelMessage || payload.draftType === DraftType.FirstThreadMessage) {
-                const thumbnails = new Set(extractFilesFromValue(entries.filter(e => entryField(e, "isThumbnail") === true)));
-                showPrimaryNotReadyToast(dispatched.filter(f => !thumbnails.has(f)), getGuildIdForChannel(payload.channelId));
-            }
+            if (isMessage) showPrimaryNotReadyToast(dispatched.filter(f => !thumbnails.has(f)), guildId);
             return;
         }
 
-        if (payload.draftType !== DraftType.ChannelMessage && payload.draftType !== DraftType.FirstThreadMessage) {
-            if (dispatched.length && filesExceedDiscordLimit(dispatched, getGuildIdForChannel(payload.channelId))) {
+        if (!isMessage) {
+            if (dispatched.length && filesExceedDiscordLimit(dispatched, guildId)) {
                 showToast({ text: "BigFileUpload can't take this kind of upload (such as a poll). The file is over your Discord limit and may fail to send" });
             }
             return;
         }
 
-        const thumbnails = new Set(extractFilesFromValue(entries.filter(e => entryField(e, "isThumbnail") === true)));
         const allFiles = Array.from(new Set(dispatched)).filter(f => !thumbnails.has(f));
         if (!allFiles.length) return;
         const pinned = new Set(extractFilesFromValue(entries.filter(e => entryField(e, "id") != null)));
 
-        const guildId = getGuildIdForChannel(payload.channelId);
         const excludedFiles = allFiles.filter(f => !isFileTypeAllowed(f));
 
         if (excludedFiles.length && filesExceedDiscordLimit(excludedFiles, guildId)) {
@@ -449,12 +444,11 @@ function interceptUploadAddFiles(event: unknown): void {
             showNoHostToast([...homeless]);
         }
 
-        const origin = entryField(entries[0], "origin");
         const toTake = pickFilesToTake(allFiles.filter(f => !pinned.has(f) && !homeless.has(f)), [...getDraftFiles(payload.channelId, payload.draftType), ...allFiles.filter(f => pinned.has(f))], guildId, payload.draftType, origin);
         if (!toTake.length) return;
 
         removeFilesFromPayload(payload, new Set(toTake));
-        void uploadProvidedFiles(toTake, { channelId: payload.channelId ?? null, draftType: typeof payload.draftType === "number" ? payload.draftType : undefined, automatic: true });
+        void uploadProvidedFiles(toTake, { channelId: payload.channelId ?? null, draftType: payload.draftType as number, automatic: true });
     } catch (error) {
         logger.error("Failed to intercept upload", error);
     }
@@ -469,7 +463,7 @@ function decideIncomingFiles(files: File[], channel: Channel, draftType: number,
     if (origin === "clipboard" && EditMessageStore.getEditingMessage(channel.id)) return "decline";
     const guildId = channel.guild_id ?? null;
     if (origin === "clipboard" && files.length === 1 && draftType === DraftType.ChannelMessage && !settings.store.bypassDiscordUploadOnlyOverLimit
-        && skipInAlwaysInterceptMode(files[0], origin, f => filesExceedDiscordLimit([f], guildId))) return "decline";
+        && skipInAlwaysInterceptMode(files[0], origin, guildId)) return "decline";
     return pickFilesToTake(files, getDraftFiles(channel.id, draftType), guildId, draftType, origin).length === files.length ? "take" : "pass";
 }
 
@@ -503,21 +497,14 @@ function trackMountedBar(key: string, delta: number) {
 const composerKey = (channelId: string, composer: string) => `${channelId}|${composer}`;
 
 const ProgressBarInner = ({ channelId, draftType, composer }: { channelId: string; draftType: unknown; composer: string; }) => {
-    const [state, setState] = useState(getUploadState);
-    const [, setMountedTick] = useState(0);
+    const state = React.useSyncExternalStore(subscribeUploadState, getUploadState);
+    const forceUpdate = useForceUpdater();
     const [queueOpen, setQueueOpen] = useState(false);
     const selectedId = useStateFromStores([SelectedChannelStore], () => SelectedChannelStore.getChannelId());
 
     useEffect(() => {
-        const unsubscribe = subscribeUploadState(() => setState(getUploadState()));
-        setState(getUploadState());
-        return unsubscribe;
-    }, []);
-
-    useEffect(() => {
-        const listener = () => setMountedTick(n => n + 1);
-        mountedBarListeners.add(listener);
-        return () => void mountedBarListeners.delete(listener);
+        mountedBarListeners.add(forceUpdate);
+        return () => void mountedBarListeners.delete(forceUpdate);
     }, []);
 
     useEffect(() => {
@@ -698,12 +685,6 @@ async function handleUploadFileFromDraft(upload: CloudUpload, channelId: string,
         return;
     }
 
-    const blocked = uploadBlocker();
-    if (blocked) {
-        showToast({ text: blocked, variant: "critical", duration: 8000 });
-        return;
-    }
-
     try {
         const stillWanted = () => (UploadAttachmentStore.getUploads(channelId, draftType) ?? []).some((u: CloudUpload) => u.id === upload.id);
         const uploaded = await uploadProvidedFiles([file], { channelId, draftType, composer, forceSend: true, stillWanted, ...upload.spoiler === true && { spoiler: true } });
@@ -835,7 +816,7 @@ export default definePlugin({
         }
         safely("The CORS-proxy start check", () => startCorsProxyPrompt(fresh));
 
-        if (uploadAddFilesInterceptor) {
+        if (pluginActive) {
             return;
         }
 
@@ -847,8 +828,7 @@ export default definePlugin({
         lastBypassChannelId = null;
         integrationCheck.problems = null;
         declinedBatch = null;
-        uploadAddFilesInterceptor = event => interceptUploadAddFiles(event);
-        FluxDispatcher.addInterceptor(uploadAddFilesInterceptor);
+        FluxDispatcher.addInterceptor(interceptUploadAddFiles);
 
         safely("Scheduling the integration check", () => { integrationCheckTimer = setTimeout(checkIntegration, INTEGRATION_CHECK_DELAY_MS); });
         safely("The native-helper check", () => {
@@ -861,7 +841,7 @@ export default definePlugin({
         void loadHttpOrigins();
     },
     stop() {
-        if (!uploadAddFilesInterceptor) {
+        if (!pluginActive) {
             return;
         }
 
@@ -881,7 +861,7 @@ export default definePlugin({
             const interceptors = FluxDispatcher._interceptors;
             if (Array.isArray(interceptors)) {
                 for (let i = interceptors.length - 1; i >= 0; i--) {
-                    if (interceptors[i] === uploadAddFilesInterceptor) {
+                    if (interceptors[i] === interceptUploadAddFiles) {
                         interceptors.splice(i, 1);
                     }
                 }
@@ -889,8 +869,6 @@ export default definePlugin({
         } catch (error) {
             logger.error("Failed to remove the upload interceptor", error);
         }
-
-        uploadAddFilesInterceptor = null;
     },
     patchHits,
     integrationCheck,
@@ -926,7 +904,7 @@ export function warnConflictingPlugins(): void {
     if (!found.length) return;
     logger.warn("Plugins that conflict with BigFileUpload are enabled:", found.map(name => `${name} (${CONFLICTING_PLUGINS[name]})`).join("; "));
     const many = found.length > 1;
-    showToast({ text: `BigFileUpload: ${listNames(found)} ${many ? "are" : "is"} also enabled and may take the same uploads. Turn ${many ? "them" : "it"} off if uploads go wrong`, variant: "critical", duration: 10000 });
+    showToast({ text: `BigFileUpload: ${humanFriendlyJoin(found)} ${many ? "are" : "is"} also enabled and may take the same uploads. Turn ${many ? "them" : "it"} off if uploads go wrong`, variant: "critical", duration: 10000 });
 }
 
 let region: HTMLElement | null = null;
@@ -996,29 +974,25 @@ const countFiles = (n: number) => n > 1 ? `${n} files` : "a file";
 
 const describeFiles = (files: readonly File[]) => files.length > 1 ? `${files.length} files` : files[0].name || "this file";
 
-const nameFiles = (files: readonly File[]) => files.length > 3 ? `${files.length} files` : listNames(files.map(f => f.name || "a file"));
+const nameFiles = (files: readonly File[]) => files.length > 3 ? `${files.length} files` : humanFriendlyJoin(files.map(f => f.name || "a file"));
 
 const them = (files: readonly File[]) => files.length > 1 ? "them" : "it";
 
 type OfferedHost = NonNullable<ReturnType<typeof offerHost>>;
 
-function offerGroups(files: readonly File[]): { host: OfferedHost; files: File[]; }[] | null {
+function offerGroups(files: readonly File[]): { groups: { host: OfferedHost; files: File[]; }[]; route: string; } | null {
     const groups: { host: OfferedHost; files: File[]; }[] = [];
+    const route: [ServiceType, string][] = [];
     for (const file of files) {
         const host = offerHost(file);
         if (!host) return null;
+        route.push([host.service, host.description]);
         const group = groups.find(g => g.host.service === host.service && g.host.description === host.description);
         if (group) group.files.push(file);
         else groups.push({ host, files: [file] });
     }
-    return groups;
+    return { groups, route: JSON.stringify(route) };
 }
-
-const routeKey = (groups: readonly { host: OfferedHost; files: File[]; }[], files: readonly File[]) =>
-    JSON.stringify(files.map(f => {
-        const { host } = groups.find(g => g.files.includes(f))!;
-        return [host.service, host.description];
-    }));
 
 export function offerUploadWith(files: readonly File[], target: UploadTarget, reason: OfferReason): void {
     if (!files.length) return;
@@ -1030,16 +1004,12 @@ export function offerUploadWith(files: readonly File[], target: UploadTarget, re
     const body = notReady
         ? `Discord can't send ${what} over its upload limit, and ${primaryNotReadyReason()}. Click to open BigFileUpload's settings.`
         : `Discord can't send ${what} over its upload limit, and BigFileUpload's allowed file types exclude ${why}. Click to upload ${them(files)} with BigFileUpload anyway.`;
-    try {
-        void Promise.resolve(showNotification({
-            title: notReady ? "BigFileUpload isn't set up" : "Upload with BigFileUpload?",
-            body,
-            noPersist: true,
-            onClick: notReady ? openPluginSettings : () => void confirmOffer(files, target)
-        })).catch(error => logger.error("Couldn't show the upload offer", error));
-    } catch (error) {
-        logger.error("Couldn't show the upload offer", error);
-    }
+    showNotification({
+        title: notReady ? "BigFileUpload isn't set up" : "Upload with BigFileUpload?",
+        body,
+        noPersist: true,
+        onClick: notReady ? openPluginSettings : () => void confirmOffer(files, target)
+    }).catch(error => logger.error("Couldn't show the upload offer", error));
 }
 
 async function confirmOffer(files: readonly File[], target: UploadTarget): Promise<void> {
@@ -1052,17 +1022,13 @@ async function confirmOffer(files: readonly File[], target: UploadTarget): Promi
             openPluginSettings();
             return;
         }
-        const blocked = uploadBlocker();
-        if (blocked) {
-            showToast({ text: blocked, variant: "critical", duration: 8000 });
-            return;
-        }
-        const groups = offerGroups(files);
-        if (!groups) {
+        if (toastUploadBlocker()) return;
+        const offer = offerGroups(files);
+        if (!offer) {
             showToast({ text: `No active upload host can take ${what}`, variant: "critical", duration: 8000 });
             return;
         }
-        const route = routeKey(groups, files);
+        const { groups, route } = offer;
         if (named === route) {
             await uploadProvidedFiles(files, { ...target, confirmed: true });
             return;
@@ -1077,7 +1043,7 @@ async function confirmOffer(files: readonly File[], target: UploadTarget): Promi
         const ok = await askToUseHost({
             title: "Upload with BigFileUpload?",
             question: `Discord can't send ${what} over its upload limit. ${where}`,
-            confirmText: `Upload to ${listNames([...new Set(groups.map(g => g.host.label))])}`,
+            confirmText: `Upload to ${humanFriendlyJoin([...new Set(groups.map(g => g.host.label))])}`,
             cancelText: "Cancel"
         }).answer;
         if (!ok) return;

@@ -13,16 +13,18 @@ import { Switch } from "@components/Switch";
 import { copyToClipboard } from "@utils/clipboard";
 import { classNameFactory } from "@utils/css";
 import { localStorage } from "@utils/localStorage";
+import { isObject, isObjectEmpty } from "@utils/misc";
 import { useForceUpdater } from "@utils/react";
+import { humanFriendlyJoin } from "@utils/text";
 import { OptionType } from "@utils/types";
 import { React, Select, showToast, TextArea, TextInput } from "@webpack/common";
 
-import { CORS_PROXY, CORS_PROXY_PRESETS, CredentialValues, DEFAULT_ACTIVE_FALLBACKS, describeKeptHost, describeProxy, directWebHostNames, fallbackServiceOrder, FileTypeFilter, findProxyPreset, inactiveFallbacks, isFilled, isGenericWebdav, isPresetProxy, isProxyTemplate, isPublicProxyUrl, isR2Endpoint, LEGACY_FALLBACK_ORDER, legacyConfigured, logger, normalizeLegacyFallbackOrder, parseEncryptingHostDomains, parseFileTypeFilter, parseProxyTemplate, parseShareXConfig, previewShareXRequestValue, PROXY_GUIDE_URL, proxyAddressProblem, proxyAddressText, proxyBodyLimit, proxyKey, RequestValueOptions, requiresCredentials, serviceLabel, SERVICES, ServiceType, ShareXUploaderConfig, TMPFILES_KEPT, validateShareXConfig, ZEROX0_KEPT } from "./types";
+import { CORS_PROXY, CORS_PROXY_PRESETS, CredentialValues, DEFAULT_ACTIVE_FALLBACKS, describeKeptHost, describeProxy, directWebHostNames, fallbackServiceOrder, FileTypeFilter, findProxyPreset, inactiveFallbacks, isFilled, isGenericWebdav, isPresetProxy, isProxyTemplate, isPublicProxyUrl, isR2Endpoint, LEGACY_FALLBACK_ORDER, legacyConfigured, normalizeLegacyFallbackOrder, parsedUrl, parseEncryptingHostDomains, parseFileTypeFilter, parseProxyTemplate, parseShareXConfig, previewShareXRequestValue, PROXY_GUIDE_URL, proxyAddressProblem, proxyAddressText, proxyBodyLimit, proxyKey, RequestValueOptions, requiresCredentials, serviceLabel, SERVICES, ServiceType, ShareXUploaderConfig, TMPFILES_KEPT, validateShareXConfig, ZEROX0_KEPT } from "./types";
 import { askToUseHost } from "./utils/dialogs";
 import { clearUploadHistory, forgetHistoryEntry, HistoryEntry, historyEntry, isDeleting, MAX_HISTORY, uploadHistory, useUploadHistory } from "./utils/privacy";
-import { AlwaysOrigin, answerProxyHere, checkEmbedNow, confirmRestoredProxy, consentPending, corsProxyAllowed, corsProxyWrapsVideo, EmbedTarget, embedTarget, embedTargetLabel, embedTargetName, forgetLanOrigin, forgetProxyOrigins, insecureHttpEntries, isInsecureHttpAllowed, NATIVE_EMBED_MAX, noticeProxyChange, peekDeviceProxyAnswer, peekDeviceState, peekEmbedHealth, peekFreshPending, peekProxyOrigins, proxyInvalid, proxyInvalidReason, redirectTickFor, removeAlwaysOrigin, restoreProxyUrlHere, setInsecureHttp, setProxyUrlHere, setRedirectTick, strictPending, useAlwaysOrigins, useDevicePrefs, useDeviceState, useEmbedHealth } from "./utils/proxy";
+import { AlwaysOrigin, answerProxyHere, checkEmbedNow, confirmRestoredProxy, consentPending, corsProxyAllowed, corsProxyWrapsVideo, EmbedTarget, embedTarget, embedTargetLabel, embedTargetName, forgetLanOrigin, forgetProxyOrigins, getActiveCorsProxyUrl, getEmbedProxyService, insecureHttpEntries, isInsecureHttpAllowed, NATIVE_EMBED_MAX, noticeProxyChange, peekDeviceProxyAnswer, peekDeviceState, peekEmbedHealth, peekFreshPending, peekProxyOrigins, proxyAllowedHere, proxyInvalid, proxyInvalidReason, redirectTickFor, removeAlwaysOrigin, restoreProxyUrlHere, setInsecureHttp, setProxyUrlHere, setRedirectTick, strictPending, useAlwaysOrigins, useDevicePrefs, useDeviceState, useEmbedHealth } from "./utils/proxy";
 import { httpHostKind, httpLanOnlyText } from "./utils/shared";
-import { canCheckS3PublicRead, carriesCredential, deleteFromHistory, deletionProblem, formatSize, getActiveCorsProxyUrl, getEmbedProxyService, getFallbackServices, getServiceConfigProblems, gofileGuestSynced, hasNativeHelper, hasStoredGofileGuestToken, hostRetention, INSECURE_HTTP_HOSTS, insecureHttpOffered, isHostConfigured, isUsableHere, listApprovedServers, listNames, needsProxyNote, proxiedCredentialHosts, proxyAllowedHere, proxyCredentialWarning, resetApprovedServers, resetGofileGuestToken, routesThroughProxy, setGofileGuestSync, webDeclineOutlook, ziplineMaxBytes } from "./utils/upload";
+import { canCheckS3PublicRead, carriesCredential, deleteFromHistory, deletionProblem, formatSize, getFallbackServices, getServiceConfigProblems, gofileGuestSynced, hasNativeHelper, hasStoredGofileGuestToken, hostRetention, INSECURE_HTTP_HOSTS, insecureHttpOffered, isHostConfigured, isUsableHere, listApprovedServers, needsProxyNote, proxiedCredentialHosts, proxyCredentialWarning, resetApprovedServers, resetGofileGuestToken, routesThroughProxy, setGofileGuestSync, webDeclineOutlook, ziplineMaxBytes } from "./utils/upload";
 
 const cl = classNameFactory("vc-file-upload-settings-");
 
@@ -528,18 +530,14 @@ function DraftTextArea({ id, name, description, value, onChange, placeholder, ro
     );
 }
 
-function SettingGroup(props: {
+function SettingGroup({ children, description, name }: {
     children: React.ReactNode;
-    description?: string;
+    description: string;
     name: string;
 }) {
-    const { children, description, name } = props;
-
     return (
-        <SettingsSection id={name} name={name} description={description ?? ""}>
-            <div className={`${cl("group")} ${cl("sub")}`}>
-                {children}
-            </div>
+        <SettingsSection id={name} name={name} description={description}>
+            <Sub>{children}</Sub>
         </SettingsSection>
     );
 }
@@ -571,30 +569,45 @@ function BoundSwitch({ setting, update, ...props }: Omit<Parameters<typeof Setti
     return <SettingSwitch {...props} checked={Boolean(settings.store[setting])} onChange={value => { settings.store[setting] = value; update?.(); }} />;
 }
 
+function BoundSelect({ setting, value, update, id, name, description, options, placeholder }: {
+    setting: SettingKey<OptionType.SELECT> | "stripQueryMode" | "uploadTimeoutMs";
+    value?: unknown;
+    update?: () => void;
+    id: string;
+    name: string;
+    description: string;
+    options: { label: string; value: string | number; }[];
+    placeholder?: string;
+}) {
+    const selected = value ?? settings.store[setting];
+    return (
+        <SettingsSection id={id} name={name} description={description}>
+            <Select
+                options={options}
+                isSelected={v => v === selected}
+                select={v => { settings.store[setting] = v as never; update?.(); }}
+                serialize={v => v}
+                placeholder={placeholder}
+            />
+        </SettingsSection>
+    );
+}
+
 const Sub = ({ children }: { children: React.ReactNode; }) => <div className={cl("sub")}>{children}</div>;
 
 const Guarded = ({ children }: { children: React.ReactNode; }) => <ErrorBoundary message="BigFileUpload couldn't show these settings">{children}</ErrorBoundary>;
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function readShareXConfigObject(raw?: string): Record<string, unknown> {
+function parseJsonObject(text: string): Record<string, unknown> | null | undefined {
+    if (text.trim() === "") return null;
     try {
-        const parsed = JSON.parse(raw || "{}");
-        return isPlainObject(parsed) ? parsed : {};
+        const parsed = JSON.parse(text);
+        return isObject(parsed) ? parsed as Record<string, unknown> : undefined;
     } catch {
-        return {};
+        return undefined;
     }
 }
 
-function isShareXConfigParseable(raw: string): boolean {
-    try {
-        return isPlainObject(JSON.parse(raw));
-    } catch {
-        return false;
-    }
-}
+const readShareXConfigObject = (raw?: string) => parseJsonObject(raw ?? "") ?? {};
 
 function shareXRequestUrl(raw: string | undefined): string | undefined {
     try {
@@ -632,7 +645,7 @@ function visibilityContext(picker?: VisibilityContext["picker"]): VisibilityCont
         fallbacks: shownFallbacks(),
         sharex: {
             requestUrl: shareXRequestUrl(sharexConfig),
-            parseable: sharexConfig.trim() === "" || isShareXConfigParseable(sharexConfig),
+            parseable: parseJsonObject(sharexConfig) !== undefined,
             body: String(readShareXConfigObject(sharexConfig).Body || "MultipartFormData")
         },
         alwaysCount: origins.always.length,
@@ -750,23 +763,13 @@ function ShareXFormFields(props: { store: { sharexConfig?: string; }; update: ()
     });
     const [argsInvalid, setArgsInvalid] = React.useState(false);
 
-    const parseJsonField = (text: string): Record<string, unknown> | null | undefined => {
-        if (text.trim() === "") return null;
-        try {
-            const parsed = JSON.parse(text);
-            return isPlainObject(parsed) ? parsed : undefined;
-        } catch {
-            return undefined;
-        }
-    };
-
     const writeJsonField = (key: "Headers" | "Arguments", text: string) => {
-        const parsed = parseJsonField(text);
+        const parsed = parseJsonObject(text);
         if (parsed === undefined) return;
         const next = readShareXConfigObject(store.sharexConfig);
         const stored = next[key];
         const same = parsed === null
-            ? stored === undefined || (isPlainObject(stored) && !Object.keys(stored).length)
+            ? stored === undefined || (isObject(stored) && isObjectEmpty(stored))
             : JSON.stringify(parsed) === JSON.stringify(stored);
         if (same) return;
         if (parsed === null) delete next[key];
@@ -779,7 +782,7 @@ function ShareXFormFields(props: { store: { sharexConfig?: string; }; update: ()
 
     const applyJsonField = (key: "Headers" | "Arguments", text: string, setText: (t: string) => void, setInvalid: (b: boolean) => void) => {
         setText(text);
-        setInvalid(parseJsonField(text) === undefined);
+        setInvalid(parseJsonObject(text) === undefined);
         (key === "Headers" ? headersCommit : argsCommit).schedule(() => writeJsonField(key, text));
     };
 
@@ -833,7 +836,7 @@ function ShareXFormFields(props: { store: { sharexConfig?: string; }; update: ()
                     placeholder="Select body type"
                 />
             </SettingsSection>
-            {(vis.sharexFileFormName || vis.sharexArguments) && (
+            {vis.sharexArguments && (
                 <Sub>
                     {vis.sharexFileFormName && (
                         <SettingTextInput
@@ -1139,10 +1142,6 @@ function ShareXSection({ update, note, rows, vis }: { update: () => void; note?:
         }
     };
 
-    const triggerShareXFileUpload = () => {
-        sharexFileInputRef.current?.click();
-    };
-
     const handleShareXFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (!file) return;
@@ -1173,8 +1172,6 @@ function ShareXSection({ update, note, rows, vis }: { update: () => void; note?:
     return (
         <SettingGroup name="ShareX/Custom Uploader" description="Your own upload service. Use the form, or paste or import a ShareX config.">
             {note}
-            {rows.privateWrapNote && <PrivateHostWrapNote service={ServiceType.SHAREX} />}
-            {rows.credentialWarning && <ProxyCredentialWarning service={ServiceType.SHAREX} />}
             <BoundSwitch
                 name="Form View"
                 description="Edit with individual fields instead of the raw JSON config box."
@@ -1200,7 +1197,7 @@ function ShareXSection({ update, note, rows, vis }: { update: () => void; note?:
             <InsecureHttpSettings service={ServiceType.SHAREX} url={shareXRequestUrl(store.sharexConfig)} rows={rows} />
             <SettingsSection id="sharex-config-actions" name="ShareX Config Actions" description="Import from file or validate the config">
                 <div className={cl("actions")}>
-                    <Button size="small" onClick={triggerShareXFileUpload}>Import .sxcu/.json</Button>
+                    <Button size="small" onClick={() => sharexFileInputRef.current?.click()}>Import .sxcu/.json</Button>
                     <Button size="small" onClick={validateShareX}>Validate</Button>
                 </div>
                 <input
@@ -1216,10 +1213,8 @@ function ShareXSection({ update, note, rows, vis }: { update: () => void; note?:
 }
 
 function httpOrigin(url: string | undefined): string | null {
-    const trimmed = url?.trim() ?? "";
-    if (!URL.canParse(trimmed)) return null;
-    const parsed = new URL(trimmed);
-    return parsed.protocol === "http:" ? parsed.origin : null;
+    const parsed = parsedUrl(url);
+    return parsed?.protocol === "http:" ? parsed.origin : null;
 }
 
 function InsecureHttpSettings({ service, url, rows }: { service: ServiceType; url: string | undefined; rows: HostRows; }) {
@@ -1251,44 +1246,29 @@ function needsProxyQuestion(next: string): boolean {
 function confirmProxyChange(next: string): Promise<boolean> {
     if (!needsProxyQuestion(next)) return Promise.resolve(true);
     const url = next === "" ? CORS_PROXY : next;
-    try {
-        return askToUseHost({
-            title: "Change the CORS proxy?",
-            question: `Send your credentials through ${describeProxy(url).host}? Whoever runs it sees them.`,
-            confirmText: "Use this proxy",
-            cancelText: "Cancel"
-        }).answer;
-    } catch (error) {
-        logger.error("Couldn't ask before changing the CORS proxy", error);
-        return Promise.resolve(false);
-    }
+    return askToUseHost({
+        title: "Change the CORS proxy?",
+        question: `Send your credentials through ${describeProxy(url).host}? Whoever runs it sees them.`,
+        confirmText: "Use this proxy",
+        cancelText: "Cancel"
+    }).answer;
 }
 
 function confirmRestoredProxyChange(url: string): Promise<boolean> {
     const { host } = describeProxy(url);
     const credentials = proxiedCredentialHosts(false).length > 0;
-    try {
-        return askToUseHost({
-            title: "Use your saved proxy?",
-            question: `${host} was saved as your own proxy, on this device or another one. ${credentials ? "Send your files and credentials through it? Whoever runs it sees them." : "Send your files through it? Whoever runs it sees them."} Until you answer, BigFileUpload treats it as unconfirmed on this device.`,
-            confirmText: "Use this proxy",
-            cancelText: "Not now"
-        }).answer;
-    } catch (error) {
-        logger.error("Couldn't ask before using the restored CORS proxy", error);
-        return Promise.resolve(false);
-    }
+    return askToUseHost({
+        title: "Use your saved proxy?",
+        question: `${host} was saved as your own proxy, on this device or another one. ${credentials ? "Send your files and credentials through it? Whoever runs it sees them." : "Send your files through it? Whoever runs it sees them."} Until you answer, BigFileUpload treats it as unconfirmed on this device.`,
+        confirmText: "Use this proxy",
+        cancelText: "Not now"
+    }).answer;
 }
 
 export function rememberCustomProxy(previous: string | undefined, next: string): void {
     const value = isPresetProxy(next) ? previous?.trim() ?? "" : next.trim();
     if (proxyKey(value) == null || isPresetProxy(value) || value === settings.store.corsProxyCustomUrl) return;
     settings.store.corsProxyCustomUrl = value;
-}
-
-export interface ProxyChoice {
-    url: string;
-    noRedirects: boolean;
 }
 
 const isCustomValue = (raw: string) => raw !== "" && raw !== "none" && !isPresetProxy(raw);
@@ -1340,7 +1320,6 @@ function EmbedProxySettings({ update, vis }: { update: () => void; vis: Visibili
     const key = proxyKey(active);
     const optInChecked = Boolean(store.embedUseCustomProxy) && store.embedCustomProxyFor === key;
     const notReachable = proxyAllowedHere() && key != null && !isPresetProxy(active) && !isPublicProxyUrl(active);
-    const skip = store.embedSkipNative !== false;
 
     return (
         <>
@@ -1353,19 +1332,19 @@ function EmbedProxySettings({ update, vis }: { update: () => void; vis: Visibili
 
             {vis.embedProxyService && (
                 <Sub>
-                    <SettingsSection id="embed-proxy-service" name="Embed Proxy Service" description="The service that wraps video links.">
-                        <Select
-                            options={embedProxyOptions}
-                            isSelected={v => v === service}
-                            select={v => {
-                                store.embedProxyService = v;
-                                checkEmbedNow();
-                                update();
-                            }}
-                            serialize={v => v}
-                            placeholder="Select an embed proxy service"
-                        />
-                    </SettingsSection>
+                    <BoundSelect
+                        id="embed-proxy-service"
+                        name="Embed Proxy Service"
+                        description="The service that wraps video links."
+                        options={embedProxyOptions}
+                        setting="embedProxyService"
+                        value={service}
+                        update={() => {
+                            checkEmbedNow();
+                            update();
+                        }}
+                        placeholder="Select an embed proxy service"
+                    />
                     {vis.embedPendingNote && <div className={cl("host-note")}>Video links are posted plain until you answer the CORS-proxy question on this device.</div>}
                     {vis.embedSubstitutionNote && (
                         <div className={cl("host-note")}>
@@ -1373,11 +1352,9 @@ function EmbedProxySettings({ update, vis }: { update: () => void; vis: Visibili
                         </div>
                     )}
                     {vis.embedX266Note && <div className={cl("host-note")}>x266.mov logs each link with the viewer's IP address for 30 days, and some networks block it.</div>}
-                    {vis.embedScopeNote && (
-                        <div className={cl("host-note")}>
-                            Links from Encrypting.host or private hosts{vis.embedPrivateHosts ? " (unless turned on below)" : ""}, links with a query string and bracketed links are never wrapped. The service is checked from your IP address when you upload a video.
-                        </div>
-                    )}
+                    <div className={cl("host-note")}>
+                        Links from Encrypting.host or private hosts{vis.embedPrivateHosts ? " (unless turned on below)" : ""}, links with a query string and bracketed links are never wrapped. The service is checked from your IP address when you upload a video.
+                    </div>
                     {vis.embedPreventNote && <div className={cl("host-note")}>With Prevent Discord Embeds on, inserted links aren't wrapped. Copied links are.</div>}
 
                     {vis.embedUseCustomProxy && (
@@ -1406,17 +1383,12 @@ function EmbedProxySettings({ update, vis }: { update: () => void; vis: Visibili
                         />
                     )}
 
-                    {vis.embedSkipNative && (
-                        <SettingSwitch
-                            name="Skip When Discord Can Embed"
-                            description={`Post small direct videos (up to ${formatSize(NATIVE_EMBED_MAX)}) from Catbox, Litterbox, 0x0.st and similar as they are, so Discord plays them itself.`}
-                            checked={skip}
-                            onChange={v => {
-                                store.embedSkipNative = v;
-                                update();
-                            }}
-                        />
-                    )}
+                    <BoundSwitch
+                        name="Skip When Discord Can Embed"
+                        description={`Post small direct videos (up to ${formatSize(NATIVE_EMBED_MAX)}) from Catbox, Litterbox, 0x0.st and similar as they are, so Discord plays them itself.`}
+                        setting="embedSkipNative"
+                        update={update}
+                    />
 
                     {vis.embedHealth && target && (
                         <SettingsSection id="embed-proxy-health" name="Embed Service Status" description={embedHealthText(target)}>
@@ -1432,15 +1404,13 @@ function EmbedProxySettings({ update, vis }: { update: () => void; vis: Visibili
 }
 
 function s3AnonymousReadText(endpoint: string | undefined): string {
-    const value = endpoint?.trim() ?? "";
-    const https = value === "" || (URL.canParse(value) && new URL(value).protocol === "https:");
+    const https = !isFilled(endpoint) || isHttpsUrl(endpoint);
     const checked = https && canCheckS3PublicRead();
     return `Without a Public Base URL, links work only if your bucket allows anonymous reads.${checked ? " BigFileUpload checks that once per bucket per session, after an upload, and warns if it doesn't." : ""}`;
 }
 
 function endpointHostText(endpoint: string | undefined): string {
-    const value = endpoint?.trim() ?? "";
-    return URL.canParse(value) && new URL(value).host ? new URL(value).host : "your endpoint";
+    return parsedUrl(endpoint)?.host || "your endpoint";
 }
 
 function PrivateHostWrapNote({ service }: { service: ServiceType; }) {
@@ -1706,16 +1676,12 @@ function SavedCredentials({ vis, update }: { vis: Visibility; update: () => void
             update();
         };
         if (entry.service !== ServiceType.SHAREX) return run();
-        try {
-            void askToUseHost({
-                title: "Clear the custom uploader?",
-                question: "This removes the whole ShareX config (address, headers and fields) from every device that syncs these settings.",
-                confirmText: "Clear",
-                cancelText: "Cancel"
-            }).answer.then(ok => { if (ok) run(); });
-        } catch (error) {
-            logger.error("Couldn't ask before clearing the ShareX config", error);
-        }
+        void askToUseHost({
+            title: "Clear the custom uploader?",
+            question: "This removes the whole ShareX config (address, headers and fields) from every device that syncs these settings.",
+            confirmText: "Clear",
+            cancelText: "Cancel"
+        }).answer.then(ok => { if (ok) run(); });
     };
     const howToUse = settings.store.disableFallbacks ? "Select one above to use it" : "Turn a host on under Fallback Order to use it";
     return (
@@ -1817,17 +1783,15 @@ function FallbackControls({ update }: { update: () => void; }) {
             />
             {vis.primaryFailureMode && (
                 <Sub>
-                    <SettingsSection id="primary-failure-mode" name="When the Selected Host Fails" description="Files for a private host (Zipline, S3, WebDAV, a custom uploader) or Encrypting.host only fall back to your other private hosts. Always ask confirms every other host first.">
-                        <Select
-                            options={primaryFailureOptions}
-                            isSelected={v => v === (store.primaryFailureMode === "ask" ? "ask" : "auto")}
-                            select={v => {
-                                store.primaryFailureMode = v;
-                                update();
-                            }}
-                            serialize={v => v}
-                        />
-                    </SettingsSection>
+                    <BoundSelect
+                        id="primary-failure-mode"
+                        name="When the Selected Host Fails"
+                        description="Files for a private host (Zipline, S3, WebDAV, a custom uploader) or Encrypting.host only fall back to your other private hosts. Always ask confirms every other host first."
+                        options={primaryFailureOptions}
+                        setting="primaryFailureMode"
+                        value={store.primaryFailureMode === "ask" ? "ask" : "auto"}
+                        update={update}
+                    />
                 </Sub>
             )}
         </>
@@ -1920,18 +1884,15 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
                     onChange={v => store.encryptingHostDomains = v}
                     validate={domainsProblem}
                 />
-                <SettingsSection id="url-style" name="URL Style" description="How links are formatted. Zero-width hides the decryption key in invisible characters.">
-                    <Select
-                        options={encryptingHostUrlStyleOptions}
-                        isSelected={v => v === store.encryptingHostUrlStyle}
-                        select={v => {
-                            store.encryptingHostUrlStyle = v;
-                            update();
-                        }}
-                        serialize={v => v}
-                        placeholder="Select URL style"
-                    />
-                </SettingsSection>
+                <BoundSelect
+                    id="url-style"
+                    name="URL Style"
+                    description="How links are formatted. Zero-width hides the decryption key in invisible characters."
+                    options={encryptingHostUrlStyleOptions}
+                    setting="encryptingHostUrlStyle"
+                    update={update}
+                    placeholder="Select URL style"
+                />
                 {(vis.encryptingHostTitle || vis.encryptingHostColor || vis.encryptingHostFakelink) && (
                     <Sub>
                         {vis.encryptingHostTitle && (
@@ -2076,29 +2037,24 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
         case ServiceType.LITTERBOX: return (
             <SettingGroup name="Litterbox" description="Temporary uploads.">
                 {note}
-                <SettingsSection id="litterbox-expiry" name="Retention Window" description="How long Litterbox keeps uploads.">
-                    <Select
-                        options={litterboxOptions}
-                        isSelected={v => v === store.litterboxExpiry}
-                        select={v => {
-                            store.litterboxExpiry = v;
-                            update();
-                        }}
-                        serialize={v => v}
-                        placeholder="Select expiry"
-                    />
-                </SettingsSection>
-                <SettingsSection id="litterbox-name-length" name="File Name Length" description="Longer links are harder to guess.">
-                    <Select
-                        options={litterboxNameOptions}
-                        isSelected={v => v === (store.litterboxFileNameLength === "16" ? "16" : "default")}
-                        select={v => {
-                            store.litterboxFileNameLength = v;
-                            update();
-                        }}
-                        serialize={v => v}
-                    />
-                </SettingsSection>
+                <BoundSelect
+                    id="litterbox-expiry"
+                    name="Retention Window"
+                    description="How long Litterbox keeps uploads."
+                    options={litterboxOptions}
+                    setting="litterboxExpiry"
+                    update={update}
+                    placeholder="Select expiry"
+                />
+                <BoundSelect
+                    id="litterbox-name-length"
+                    name="File Name Length"
+                    description="Longer links are harder to guess."
+                    options={litterboxNameOptions}
+                    setting="litterboxFileNameLength"
+                    value={store.litterboxFileNameLength === "16" ? "16" : "default"}
+                    update={update}
+                />
             </SettingGroup>
         );
         case ServiceType.ZEROX0: return vis.zeroX0Options ? (
@@ -2109,33 +2065,29 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
                     setting="zeroX0Secret"
                     update={update}
                 />
-                <SettingsSection id="zerox0-expiry" name="Delete After" description="0x0.st deletes the file by this time at the latest.">
-                    <Select
-                        options={zeroX0ExpiryOptions}
-                        isSelected={v => v === (Object.hasOwn(ZEROX0_KEPT, store.zeroX0Expiry ?? "") ? store.zeroX0Expiry : "default")}
-                        select={v => {
-                            store.zeroX0Expiry = v;
-                            update();
-                        }}
-                        serialize={v => v}
-                    />
-                </SettingsSection>
+                <BoundSelect
+                    id="zerox0-expiry"
+                    name="Delete After"
+                    description="0x0.st deletes the file by this time at the latest."
+                    options={zeroX0ExpiryOptions}
+                    setting="zeroX0Expiry"
+                    value={Object.hasOwn(ZEROX0_KEPT, store.zeroX0Expiry ?? "") ? store.zeroX0Expiry : "default"}
+                    update={update}
+                />
             </SettingGroup>
         ) : null;
         case ServiceType.TMPFILES: return (
             <SettingGroup name="tmpfiles.org" description="Temporary uploads.">
                 {note}
-                <SettingsSection id="tmpfiles-expiry" name="Retention Window" description="How long tmpfiles.org keeps uploads.">
-                    <Select
-                        options={tmpfilesExpiryOptions}
-                        isSelected={v => v === (Object.hasOwn(TMPFILES_KEPT, store.tmpfilesExpiry ?? "") ? store.tmpfilesExpiry : "default")}
-                        select={v => {
-                            store.tmpfilesExpiry = v;
-                            update();
-                        }}
-                        serialize={v => v}
-                    />
-                </SettingsSection>
+                <BoundSelect
+                    id="tmpfiles-expiry"
+                    name="Retention Window"
+                    description="How long tmpfiles.org keeps uploads."
+                    options={tmpfilesExpiryOptions}
+                    setting="tmpfilesExpiry"
+                    value={Object.hasOwn(TMPFILES_KEPT, store.tmpfilesExpiry ?? "") ? store.tmpfilesExpiry : "default"}
+                    update={update}
+                />
             </SettingGroup>
         );
         case ServiceType.GOFILE: return (
@@ -2157,14 +2109,12 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
                             setting="gofileReuseGuestToken"
                             update={update}
                         />
-                        {vis.gofileGuestSync && (
-                            <SettingSwitch
-                                name="Sync GoFile Guest Token Across Devices"
-                                description="Save the guest token with your settings so your other devices use the same guest account. Off: it stays on this device."
-                                checked={gofileGuestSynced()}
-                                onChange={v => void setGofileGuestSync(v).then(update)}
-                            />
-                        )}
+                        <SettingSwitch
+                            name="Sync GoFile Guest Token Across Devices"
+                            description="Save the guest token with your settings so your other devices use the same guest account. Off: it stays on this device."
+                            checked={gofileGuestSynced()}
+                            onChange={v => void setGofileGuestSync(v).then(update)}
+                        />
                     </Sub>
                 )}
                 {vis.gofileGuestReset && (
@@ -2208,7 +2158,7 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
                 />
             </SettingGroup>
         );
-        case ServiceType.SHAREX: return <ShareXSection update={update} note={note} rows={rows} vis={vis} />;
+        case ServiceType.SHAREX: return <ShareXSection update={update} note={<>{note}{wrapNote}{credentialWarning}</>} rows={rows} vis={vis} />;
         case ServiceType.WEBDAV: return (
             <SettingGroup name="WebDAV" description={"Connection details for WebDAV servers (Nextcloud, ownCloud and others)."}>
                 {note}
@@ -2242,32 +2192,26 @@ function HostSection({ service, update }: { service: ServiceType; update: () => 
                     setting="webdavDirectory"
                     placeholder="Leave empty for root directory"
                 />
-                <SettingsSection id="server-type" name="Server Type" description="Nextcloud and ownCloud create a public share link. Generic posts the file's own URL, as does any URL without /remote.php/.">
-                    <Select
-                        options={webdavServerTypeOptions}
-                        isSelected={v => v === store.webdavServerType}
-                        select={v => {
-                            store.webdavServerType = v;
-                            update();
-                        }}
-                        serialize={v => v}
-                        placeholder="Select server type"
-                    />
-                </SettingsSection>
+                <BoundSelect
+                    id="server-type"
+                    name="Server Type"
+                    description="Nextcloud and ownCloud create a public share link. Generic posts the file's own URL, as does any URL without /remote.php/."
+                    options={webdavServerTypeOptions}
+                    setting="webdavServerType"
+                    update={update}
+                    placeholder="Select server type"
+                />
                 {vis.webdavShareLinkFormat && (
                     <Sub>
-                        <SettingsSection id="share-link-format" name="Share Link Format" description="Share Page links to a web page, Direct Download to the file, Markdown Link to a clickable file name.">
-                            <Select
-                                options={webdavShareTypeOptions}
-                                isSelected={v => v === store.webdavShareType}
-                                select={v => {
-                                    store.webdavShareType = v;
-                                    update();
-                                }}
-                                serialize={v => v}
-                                placeholder="Select share link format"
-                            />
-                        </SettingsSection>
+                        <BoundSelect
+                            id="share-link-format"
+                            name="Share Link Format"
+                            description="Share Page links to a web page, Direct Download to the file, Markdown Link to a clickable file name."
+                            options={webdavShareTypeOptions}
+                            setting="webdavShareType"
+                            update={update}
+                            placeholder="Select share link format"
+                        />
                     </Sub>
                 )}
                 {vis.webdavGenericNote && (
@@ -2352,17 +2296,15 @@ function UploadBehaviorGroup({ update }: { update: () => void; }) {
 
             {vis.stripQueryMode && (
                 <Sub>
-                    <SettingsSection id="strip-query-mode" name="Which Parameters" description="Tracking parameters only removes utm_*, fbclid, si and similar, and leaves custom uploader links alone.">
-                        <Select
-                            options={stripQueryModeOptions}
-                            isSelected={v => v === getStripQueryMode()}
-                            select={v => {
-                                store.stripQueryMode = v;
-                                update();
-                            }}
-                            serialize={v => v}
-                        />
-                    </SettingsSection>
+                    <BoundSelect
+                        id="strip-query-mode"
+                        name="Which Parameters"
+                        description="Tracking parameters only removes utm_*, fbclid, si and similar, and leaves custom uploader links alone."
+                        options={stripQueryModeOptions}
+                        setting="stripQueryMode"
+                        value={getStripQueryMode()}
+                        update={update}
+                    />
                 </Sub>
             )}
 
@@ -2373,7 +2315,7 @@ function UploadBehaviorGroup({ update }: { update: () => void; }) {
 
 function fileTypeFilterSummary(filter: FileTypeFilter | null): string {
     if (!filter) return "";
-    const exts = (list: Iterable<string>) => listNames([...list].map(ext => "." + ext));
+    const exts = (list: Iterable<string>) => humanFriendlyJoin([...list], ext => "." + ext);
     if (!filter.allow.size) return `Handles every file except ${exts(filter.deny)} files.`;
     const allowed = [...filter.allow].filter(ext => !filter.deny.has(ext));
     return allowed.length ? `Handles only ${exts(allowed)} files.` : "Handles no files: every listed type is also excluded.";
@@ -2415,27 +2357,25 @@ function DiscordIntegrationGroup({ update }: { update: () => void; }) {
                         update={update}
                     />
 
-                    {(vis.manualLimit || vis.uploadWholeBatch || vis.skipDiscordGenerated) && (
-                        <Sub>
-                            {vis.manualLimit && <ManualLimitInput />}
+                    <Sub>
+                        {vis.manualLimit && <ManualLimitInput />}
 
-                            {vis.uploadWholeBatch && (
-                                <BoundSwitch
-                                    name="Upload Whole Batch Externally"
-                                    description="If some files are over the limit, upload the whole batch. Off: only those files are uploaded."
-                                    setting="uploadWholeBatch"
-                                />
-                            )}
+                        {vis.manualLimit && (
+                            <BoundSwitch
+                                name="Upload Whole Batch Externally"
+                                description="If some files are over the limit, upload the whole batch. Off: only those files are uploaded."
+                                setting="uploadWholeBatch"
+                            />
+                        )}
 
-                            {vis.skipDiscordGenerated && (
-                                <BoundSwitch
-                                    name="Skip Discord-Generated Files"
-                                    description="Leave message.txt, text sent as a file and clip shares to Discord unless they're over the limit."
-                                    setting="skipDiscordGeneratedFiles"
-                                />
-                            )}
-                        </Sub>
-                    )}
+                        {!vis.manualLimit && (
+                            <BoundSwitch
+                                name="Skip Discord-Generated Files"
+                                description="Leave message.txt, text sent as a file and clip shares to Discord unless they're over the limit."
+                                setting="skipDiscordGeneratedFiles"
+                            />
+                        )}
+                    </Sub>
                 </>
             )}
 
@@ -2463,18 +2403,16 @@ function NetworkGroup({ update }: { update: () => void; }) {
 
             {vis.insecureHttpChoices && <InsecureHttpChoices />}
 
-            <SettingsSection id="upload-timeout" name="Upload Timeout" description="Stop an upload that makes no progress for this long and try the next host.">
-                <Select
-                    options={uploadTimeoutOptions}
-                    isSelected={v => v === snapToTimeoutOption(store.uploadTimeoutMs)}
-                    select={v => {
-                        store.uploadTimeoutMs = v;
-                        update();
-                    }}
-                    serialize={v => v}
-                    placeholder="Select timeout"
-                />
-            </SettingsSection>
+            <BoundSelect
+                id="upload-timeout"
+                name="Upload Timeout"
+                description="Stop an upload that makes no progress for this long and try the next host."
+                options={uploadTimeoutOptions}
+                setting="uploadTimeoutMs"
+                value={snapToTimeoutOption(store.uploadTimeoutMs)}
+                update={update}
+                placeholder="Select timeout"
+            />
         </SettingGroup>
     );
 }
@@ -2494,34 +2432,26 @@ async function removeFromHistory(id: string) {
 
 function confirmDelete(e: HistoryEntry) {
     const label = serviceLabel(e.service);
-    try {
-        void askToUseHost({
-            title: `Delete from ${label}?`,
-            question: `Delete this file from ${label}? Links to it stop working.`,
-            confirmText: "Delete",
-            cancelText: "Cancel"
-        }).answer.then(ok => {
-            const current = ok ? historyEntry(e.id) : undefined;
-            if (current) void deleteFromHistory(current);
-        });
-    } catch (error) {
-        logger.error("Couldn't ask before deleting a file", error);
-    }
+    void askToUseHost({
+        title: `Delete from ${label}?`,
+        question: `Delete this file from ${label}? Links to it stop working.`,
+        confirmText: "Delete",
+        cancelText: "Cancel"
+    }).answer.then(ok => {
+        const current = ok ? historyEntry(e.id) : undefined;
+        if (current) void deleteFromHistory(current);
+    });
 }
 
 function confirmClearHistory(count: number) {
-    try {
-        void askToUseHost({
-            title: "Clear upload history?",
-            question: `This forgets ${count === 1 ? "the upload" : `all ${count} uploads`} listed on this device. The files stay on their hosts, and BigFileUpload can no longer delete them: delete any you want gone first.`,
-            confirmText: "Clear history",
-            cancelText: "Cancel"
-        }).answer.then(async ok => {
-            if (ok && !await clearUploadHistory()) showToast({ text: "Couldn't save the upload history. It may come back after a restart", variant: "critical" });
-        });
-    } catch (error) {
-        logger.error("Couldn't ask before clearing the upload history", error);
-    }
+    void askToUseHost({
+        title: "Clear upload history?",
+        question: `This forgets ${count === 1 ? "the upload" : `all ${count} uploads`} listed on this device. The files stay on their hosts, and BigFileUpload can no longer delete them: delete any you want gone first.`,
+        confirmText: "Clear history",
+        cancelText: "Cancel"
+    }).answer.then(async ok => {
+        if (ok && !await clearUploadHistory()) showToast({ text: "Couldn't save the upload history. It may come back after a restart", variant: "critical" });
+    });
 }
 
 function UploadHistoryGroup() {
@@ -2530,11 +2460,9 @@ function UploadHistoryGroup() {
     const entries = uploadHistory();
     return (
         <SettingGroup name="Upload History" description={`Your last ${MAX_HISTORY} uploads, on this device only. Delete removes the file from its host. Remove only forgets the entry.`}>
-            {vis.clearHistory && (
-                <div className={cl("actions")}>
-                    <Button size="small" variant="dangerSecondary" onClick={() => confirmClearHistory(entries.length)}>Clear history</Button>
-                </div>
-            )}
+            <div className={cl("actions")}>
+                <Button size="small" variant="dangerSecondary" onClick={() => confirmClearHistory(entries.length)}>Clear history</Button>
+            </div>
             {entries.map(e => {
                 const row = vis.historyRows[e.id] ?? "none";
                 const label = serviceLabel(e.service);
@@ -2548,11 +2476,9 @@ function UploadHistoryGroup() {
                             {row === "problem" && <div className={cl("host-note")}>{deletionProblem(e)}</div>}
                         </div>
                         <Button size="small" onClick={() => void copyHistoryLink(e.url)}>Copy link</Button>
-                        {vis.historyRemove && (
-                            <Button size="small" variant="secondary" title="Forgets this entry on this device. The file stays on its host" onClick={() => void removeFromHistory(e.id)}>
-                                Remove from history
-                            </Button>
-                        )}
+                        <Button size="small" variant="secondary" title="Forgets this entry on this device. The file stays on its host" onClick={() => void removeFromHistory(e.id)}>
+                            Remove from history
+                        </Button>
                         {row === "delete" && (
                             <Button size="small" variant="dangerPrimary" disabled={busy} onClick={() => confirmDelete(e)}>
                                 {busy ? "Deleting..." : `Delete from ${label}`}
@@ -2646,7 +2572,7 @@ export function videoLinkNotice(raw: Record<string, unknown>): string | null {
     if (svc === "autocompressor" || svc === "x266") return null;
     const url = typeof raw.corsProxyUrl === "string" ? raw.corsProxyUrl.trim() : "";
     const invalid = url !== "" && url !== "none" && proxyKey(url) === null;
-    const custom = url !== "" && url !== "none" && !invalid && !isPresetProxy(url);
+    const custom = !invalid && isCustomValue(url);
     if (custom) return "Video links now use autocompressor.net instead of your proxy. See Upload Behavior → Video Embed Proxy.";
     if (raw.disableCorsProxy === true || url === "none" || invalid) return "Video links now use autocompressor.net instead of the CORS proxy. See Upload Behavior → Video Embed Proxy.";
     return null;
@@ -2840,21 +2766,9 @@ const HOST_SECRETS: Partial<Record<ServiceType, readonly (readonly [key: string,
     [ServiceType.SHAREX]: [["sharexConfig", "config with credentials"]]
 };
 
-const INSECURE_HTTP_SECTIONS: ReadonlySet<ServiceType> = new Set([ServiceType.ZIPLINE, ServiceType.WEBDAV, ServiceType.SHAREX, ServiceType.S3]);
+const isHttpUrl = (raw: unknown) => parsedUrl(raw)?.protocol === "http:";
 
-const filled = (v: unknown) => typeof v === "string" && v.trim() !== "";
-
-function isHttpUrl(raw: unknown): raw is string {
-    if (typeof raw !== "string") return false;
-    const value = raw.trim();
-    return URL.canParse(value) && new URL(value).protocol === "http:";
-}
-
-function isHttpsUrl(raw: unknown): boolean {
-    if (typeof raw !== "string") return false;
-    const value = raw.trim();
-    return URL.canParse(value) && new URL(value).protocol === "https:";
-}
+const isHttpsUrl = (raw: unknown) => parsedUrl(raw)?.protocol === "https:";
 
 function hostUrl(ctx: VisibilityContext, service: ServiceType): string | undefined {
     const { store } = ctx;
@@ -2893,7 +2807,7 @@ export function getVisibility(ctx: VisibilityContext) {
     for (const s of shown) {
         if (!known(s)) continue;
         const url = hostUrl(ctx, s);
-        const http = INSECURE_HTTP_SECTIONS.has(s) && isHttpUrl(url);
+        const http = isHttpUrl(url);
         hostRows[s] = {
             credentialWarning: credentialViaProxy(s),
             privateWrapNote: PRIVATE_HOSTS.includes(s) && embed && Boolean(store.embedProxyPrivateHosts) && ctx.embedHasTarget,
@@ -2916,7 +2830,7 @@ export function getVisibility(ctx: VisibilityContext) {
     const elsewhereCredentials: SavedCredential[] = [];
     for (const [service, secrets] of Object.entries(HOST_SECRETS) as [ServiceType, readonly (readonly [string, string])[]][]) {
         if (shown.has(service)) continue;
-        const present = secrets.filter(([key]) => filled(store[key]));
+        const present = secrets.filter(([key]) => isFilled(store[key]));
         if (!present.length || (service === ServiceType.SHAREX && !ctx.carriesCredential(service))) continue;
         const entry = { service, keys: present.map(([key]) => key), names: present.map(([, name]) => name) };
         if (fallbacksOn && ctx.fallbacks.includes(service) && !ctx.isUsableHere(service)) elsewhereCredentials.push(entry);
@@ -2936,14 +2850,14 @@ export function getVisibility(ctx: VisibilityContext) {
     const draft = picker?.draft.trim() ?? "";
     const draftUsable = own && draft !== "" && proxyKey(draft) != null;
     const committed = picker?.committed.trim() ?? "";
-    const committedCustom = committed !== "" && committed !== "none" && !isPresetProxy(committed);
+    const committedCustom = isCustomValue(committed);
     const optedIn = ctx.proxyAllowedHere && Boolean(store.embedUseCustomProxy) && proxyKey(committed) != null
         && store.embedCustomProxyFor === proxyKey(committed) && committedCustom && isPublicProxyUrl(committed);
     const pickerVideo = own && embed && cors;
 
-    const entries = ctx.history?.length ?? 0;
+    const entries = ctx.history.length;
     const historyRows: Record<string, HistoryRow> = {};
-    for (const h of ctx.history ?? []) {
+    for (const h of ctx.history) {
         historyRows[h.id] = h.anonymous ? "anonymous" : !h.deletable ? "none" : h.problem ? "problem" : "delete";
     }
 
@@ -2957,15 +2871,13 @@ export function getVisibility(ctx: VisibilityContext) {
         encryptingHostFakelink: style === "fakelink",
         s3SignPayload: isHttpsUrl(store.s3Endpoint) && !ctx.s3Proxied,
         s3MultipartNote: renderer,
-        s3R2Note: !filled(store.s3PublicUrl) && isR2Endpoint(store.s3Endpoint),
-        s3AnonymousReadNote: !filled(store.s3PublicUrl) && !isR2Endpoint(store.s3Endpoint),
+        s3R2Note: !isFilled(store.s3PublicUrl) && isR2Endpoint(store.s3Endpoint),
+        s3AnonymousReadNote: !isFilled(store.s3PublicUrl) && !isR2Endpoint(store.s3Endpoint),
         s3DottedBucketNote: store.s3ForcePathStyle === false && typeof store.s3Bucket === "string" && store.s3Bucket.includes(".") && !isHttpUrl(store.s3Endpoint),
         zeroX0Options: ctx.isUsableHere(ServiceType.ZEROX0),
-        gofileGuestReuse: !filled(store.gofileToken),
-        gofileGuestSync: !filled(store.gofileToken),
+        gofileGuestReuse: !isFilled(store.gofileToken),
         gofileGuestReset: Boolean(ctx.gofileGuestStored),
         sharexRawConfig: !formView,
-        sharexForm: sharexFormOk,
         sharexInvalidConfig: formView && !sharex.parseable,
         sharexFileFormName: sharexFormOk && (sharexBody === "multipartformdata" || sharexBody === "formdata"),
         sharexArguments: sharexFormOk && sharexBody !== "binary",
@@ -2980,17 +2892,13 @@ export function getVisibility(ctx: VisibilityContext) {
         embedPendingNote: embed && ctx.embedStrictPending,
         embedSubstitutionNote: embed && cors && !ctx.embedStrictPending && !ctx.corsProxyWrapsVideo,
         embedX266Note: embed && ctx.embedService === "x266",
-        embedScopeNote: embed,
         embedPreventNote: embed && Boolean(store.autoFormat) && !store.displayOriginalFilename,
         embedUseCustomProxy: embed && cors && ctx.proxyAllowedHere && customActive && isPublicProxyUrl(active),
         embedPrivateHosts: embed && privateInUse,
-        embedSkipNative: embed,
         embedHealth: embed && ctx.embedHasTarget,
 
         respectLimit: respectShown,
         manualLimit: respectShown && respect,
-        uploadWholeBatch: respectShown && respect,
-        skipDiscordGenerated: respectShown && !respect,
         allowedTypesSummary: parseFileTypeFilter(store.uploadAllowedFileTypes) != null,
 
         nativeHelperWarning: !ctx.isWeb && !ctx.hasNativeHelper,
@@ -3013,8 +2921,6 @@ export function getVisibility(ctx: VisibilityContext) {
         fallbackEmptyHint: fallbacksOn && others.length === 0,
         fallbackHosts: fallbackSections.length > 0,
         uploadHistory: entries > 0,
-        historyRemove: entries > 0,
-        clearHistory: entries > 0,
 
         fallbackSections,
         hostRows,

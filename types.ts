@@ -62,13 +62,11 @@ export interface ServiceInfo {
     web: "direct" | "direct-simple" | "proxy" | "unsupported" | "user";
     directMedia: boolean | "user";
     retention?(size?: number, opts?: RetentionOptions): string;
-    verified: string;
 }
 
 export const SERVICES: Record<ServiceType, ServiceInfo> = {
     [ServiceType.CATBOX]: {
         label: "Catbox",
-        pickerLabel: "Catbox",
         apiHost: "catbox.moe",
         body: "multipart",
         maxBytes: 200_000_000,
@@ -78,8 +76,7 @@ export const SERVICES: Record<ServiceType, ServiceInfo> = {
         privacy: "public",
         web: "proxy",
         directMedia: true,
-        retention: () => "public, deleted after 2 idle years (anonymous)",
-        verified: "2026-10-16; web 2026-10-18"
+        retention: () => "public, deleted after 2 idle years (anonymous)"
     },
     [ServiceType.LITTERBOX]: {
         label: "Litterbox",
@@ -91,8 +88,7 @@ export const SERVICES: Record<ServiceType, ServiceInfo> = {
         privacy: "public",
         web: "direct-simple",
         directMedia: true,
-        retention: (_, opts) => `public, deleted after ${LITTERBOX_KEPT[opts?.litterboxExpiry ?? ""] ?? "24 hours"}`,
-        verified: "2026-10-16; web 2026-10-18"
+        retention: (_, opts) => `public, deleted after ${LITTERBOX_KEPT[opts?.litterboxExpiry ?? ""] ?? "24 hours"}`
     },
     [ServiceType.ZEROX0]: {
         label: "0x0.st",
@@ -105,8 +101,7 @@ export const SERVICES: Record<ServiceType, ServiceInfo> = {
         web: "unsupported",
         directMedia: true,
         retention: (size, opts) => Object.hasOwn(ZEROX0_KEPT, opts?.zeroX0Expiry ?? "") ? `public, deleted after ${ZEROX0_KEPT[opts!.zeroX0Expiry!]}`
-            : size === undefined ? "public, kept 30 days to 1 year" : `public, kept about ${zeroX0RetentionDays(size)} days`,
-        verified: "2026-10-16"
+            : size === undefined ? "public, kept 30 days to 1 year" : `public, kept about ${zeroX0RetentionDays(size)} days`
     },
     [ServiceType.TMPFILES]: {
         label: "tmpfiles.org",
@@ -117,8 +112,7 @@ export const SERVICES: Record<ServiceType, ServiceInfo> = {
         privacy: "public",
         web: "proxy",
         directMedia: false,
-        retention: (_, opts) => `public, deleted after ${Object.hasOwn(TMPFILES_KEPT, opts?.tmpfilesExpiry ?? "") ? TMPFILES_KEPT[opts!.tmpfilesExpiry!] : "1 hour"}`,
-        verified: "2026-10-16; web unanswered 2026-10-18"
+        retention: (_, opts) => `public, deleted after ${Object.hasOwn(TMPFILES_KEPT, opts?.tmpfilesExpiry ?? "") ? TMPFILES_KEPT[opts!.tmpfilesExpiry!] : "1 hour"}`
     },
     [ServiceType.GOFILE]: {
         label: "GoFile",
@@ -129,8 +123,7 @@ export const SERVICES: Record<ServiceType, ServiceInfo> = {
         privacy: "public",
         web: "direct",
         directMedia: false,
-        retention: () => "public, deleted after 10 days unused",
-        verified: "2026-10-16; web 2026-10-18"
+        retention: () => "public, deleted after 10 days unused"
     },
     [ServiceType.BUZZHEAVIER]: {
         label: "buzzheavier.com",
@@ -141,8 +134,7 @@ export const SERVICES: Record<ServiceType, ServiceInfo> = {
         privacy: "public",
         web: "proxy",
         directMedia: false,
-        retention: () => "public",
-        verified: "2026-10-16"
+        retention: () => "public"
     },
     [ServiceType.TEMPSH]: {
         label: "temp.sh",
@@ -153,8 +145,7 @@ export const SERVICES: Record<ServiceType, ServiceInfo> = {
         privacy: "public",
         web: "proxy",
         directMedia: false,
-        retention: () => "public, deleted after 3 days",
-        verified: "2026-10-16"
+        retention: () => "public, deleted after 3 days"
     },
     [ServiceType.FILEBIN]: {
         label: "filebin.net",
@@ -165,8 +156,7 @@ export const SERVICES: Record<ServiceType, ServiceInfo> = {
         privacy: "public",
         web: "direct",
         directMedia: false,
-        retention: () => "public, deleted after about 6 days",
-        verified: "2026-10-16; web 2026-10-18"
+        retention: () => "public, deleted after about 6 days"
     },
     [ServiceType.ZIPLINE]: {
         label: "Zipline",
@@ -175,8 +165,7 @@ export const SERVICES: Record<ServiceType, ServiceInfo> = {
         needsAuth: true,
         privacy: "private",
         web: "user",
-        directMedia: "user",
-        verified: "2026-10-16"
+        directMedia: "user"
     },
     [ServiceType.EZHOST]: {
         label: "E-Z Host",
@@ -186,8 +175,7 @@ export const SERVICES: Record<ServiceType, ServiceInfo> = {
         needsAuth: true,
         privacy: "public",
         web: "proxy",
-        directMedia: false,
-        verified: "2026-10-16"
+        directMedia: false
     },
     [ServiceType.NEST]: {
         label: "Nest",
@@ -197,8 +185,7 @@ export const SERVICES: Record<ServiceType, ServiceInfo> = {
         needsAuth: true,
         privacy: "public",
         web: "proxy",
-        directMedia: false,
-        verified: "2026-10-16"
+        directMedia: false
     },
     [ServiceType.ENCRYPTINGHOST]: {
         label: "Encrypting.host",
@@ -209,8 +196,7 @@ export const SERVICES: Record<ServiceType, ServiceInfo> = {
         privacy: "public",
         confidential: true,
         web: "proxy",
-        directMedia: false,
-        verified: "2026-10-16"
+        directMedia: false
     },
     [ServiceType.S3]: {
         label: "S3-Compatible",
@@ -219,8 +205,7 @@ export const SERVICES: Record<ServiceType, ServiceInfo> = {
         needsAuth: true,
         privacy: "private",
         web: "user",
-        directMedia: "user",
-        verified: "2026-10-16"
+        directMedia: "user"
     },
     [ServiceType.PIXELVAULT]: {
         label: "PixelVault",
@@ -230,8 +215,7 @@ export const SERVICES: Record<ServiceType, ServiceInfo> = {
         needsAuth: true,
         privacy: "public",
         web: "proxy",
-        directMedia: false,
-        verified: "2026-10-16"
+        directMedia: false
     },
     [ServiceType.PIXELDRAIN]: {
         label: "PixelDrain",
@@ -242,8 +226,7 @@ export const SERVICES: Record<ServiceType, ServiceInfo> = {
         privacy: "public",
         web: "proxy",
         directMedia: false,
-        retention: () => "public, deleted after 60 days unused",
-        verified: "2026-10-16"
+        retention: () => "public, deleted after 60 days unused"
     },
     [ServiceType.WEBDAV]: {
         label: "WebDAV",
@@ -253,8 +236,7 @@ export const SERVICES: Record<ServiceType, ServiceInfo> = {
         needsAuth: true,
         privacy: "private",
         web: "user",
-        directMedia: "user",
-        verified: "2026-10-16"
+        directMedia: "user"
     },
     [ServiceType.SHAREX]: {
         label: "ShareX/Custom Uploader",
@@ -263,16 +245,14 @@ export const SERVICES: Record<ServiceType, ServiceInfo> = {
         needsAuth: false,
         privacy: "private",
         web: "user",
-        directMedia: "user",
-        verified: "2026-10-16"
+        directMedia: "user"
     }
 };
 
 export const fallbackServiceOrder = Object.keys(SERVICES) as ServiceType[];
 
 export function isR2Endpoint(endpoint: unknown): boolean {
-    if (typeof endpoint !== "string" || !URL.canParse(endpoint.trim())) return false;
-    return new URL(endpoint.trim()).hostname.toLowerCase().endsWith(".r2.cloudflarestorage.com");
+    return parsedUrl(endpoint)?.hostname.toLowerCase().endsWith(".r2.cloudflarestorage.com") ?? false;
 }
 
 export function isGenericWebdav(serverType: unknown, url: unknown): boolean {
@@ -294,8 +274,6 @@ export function directWebHostNames(last: "and" | "or"): string {
 export function requiresCredentials(service: ServiceType): boolean {
     return SERVICES[service].needsAuth || SERVICES[service].privacy === "private";
 }
-
-export const needsOriginConfirmation = requiresCredentials;
 
 export function fallsBackToPublic(service: ServiceType): boolean {
     return SERVICES[service].privacy === "public" && !SERVICES[service].confidential;
@@ -361,8 +339,6 @@ export interface ShareXUploaderConfig {
 
 export const logger = new Logger("BigFileUpload", "#7cb7ff");
 
-export const listNames = (names: string[]) => names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names[0] ?? "";
-
 export const CORS_PROXY = "https://cors.keiran0.workers.dev";
 
 export const PROXY_GUIDE_URL = "https://github.com/ScattrdBlade/bigFileUpload/blob/main/SELF-HOSTING.md";
@@ -382,8 +358,6 @@ export interface ProxyPreset {
 export const CORS_PROXY_PRESETS: readonly ProxyPreset[] = [
     { id: "default", url: CORS_PROXY, host: "cors.keiran0.workers.dev", operator: "keircn", source: "https://codeberg.org/key/corsproxy", maxBodyBytes: PROXY_MAX_BODY_BYTES, safeRedirects: false }
 ];
-
-export const DEFAULT_PROXY = CORS_PROXY_PRESETS[0];
 
 const PLACEHOLDER = "{url}";
 
@@ -483,7 +457,7 @@ function proxyBaseUrl(url: string | undefined): URL | null {
 
 export function findProxyPreset(url: string | undefined): ProxyPreset | null {
     const k = proxyKey(url);
-    if (k == null) return DEFAULT_PROXY;
+    if (k == null) return CORS_PROXY_PRESETS[0];
     return CORS_PROXY_PRESETS.find(p => p.host === k) ?? null;
 }
 
@@ -580,15 +554,6 @@ const FILE_BODIES = new Set(["multipartformdata", "formdata", "binary"]);
 
 const HEADER_NAME_REGEX = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
-function parseDestinationTypes(destinationType?: string): string[] {
-    if (!destinationType) return [];
-
-    return destinationType
-        .split(",")
-        .map(type => type.trim())
-        .filter(Boolean);
-}
-
 export function readShareXConfig(configText: string): ShareXUploaderConfig {
     let parsed: unknown;
     const normalizedConfigText = configText.replace(/^\uFEFF/, "").trim();
@@ -630,14 +595,9 @@ export function parseShareXConfig(configText: string): ShareXUploaderConfig {
     return config;
 }
 
-function isSupportedShareXDestination(config: ShareXUploaderConfig): boolean {
-    const destinationTypes = parseDestinationTypes(config.DestinationType);
-
-    if (destinationTypes.length === 0) {
-        return true;
-    }
-
-    return destinationTypes.includes("FileUploader") || destinationTypes.includes("ImageUploader");
+function isSupportedShareXDestination({ DestinationType }: ShareXUploaderConfig): boolean {
+    const types = DestinationType ? DestinationType.split(",").map(t => t.trim()).filter(Boolean) : [];
+    return !types.length || types.includes("FileUploader") || types.includes("ImageUploader");
 }
 
 type Part = string | Call;
@@ -923,7 +883,7 @@ function readXml(input: string, xpath: string): string | null {
     return node?.textContent ?? null;
 }
 
-function toBase64(text: string): string {
+export function toBase64(text: string): string {
     let binary = "";
     for (const byte of new TextEncoder().encode(text)) binary += String.fromCharCode(byte);
     return btoa(binary);
@@ -1253,7 +1213,7 @@ export function credentialProblems(service: ServiceType, values: CredentialValue
     }
 }
 
-function parsedUrl(raw: unknown): URL | null {
+export function parsedUrl(raw: unknown): URL | null {
     return isFilled(raw) && URL.canParse(raw.trim()) ? new URL(raw.trim()) : null;
 }
 
@@ -1293,14 +1253,7 @@ export function hasConfiguredCredential(service: ServiceType, values: Credential
     }
 }
 
-function endpointHost(raw: unknown): string | undefined {
-    if (!isFilled(raw)) return undefined;
-    try {
-        return new URL(raw.trim()).host || undefined;
-    } catch {
-        return undefined;
-    }
-}
+const endpointHost = (raw: unknown) => parsedUrl(raw)?.host || undefined;
 
 export function describeKeptHost(service: ServiceType, values: CredentialValues): string {
     let host: string | undefined;

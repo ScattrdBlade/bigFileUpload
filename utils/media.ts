@@ -134,7 +134,7 @@ export function getUrlExtension(url: string): string | undefined {
         const lastSegment = pathname.split("/").pop() || "";
         if (!lastSegment.includes(".")) return undefined;
         const ext = lastSegment.split(".").pop()?.toLowerCase();
-        if (!ext || ext.length === 0 || ext.length > 10) return undefined;
+        if (!ext || ext.length > 10) return undefined;
         return ext;
     } catch {
         return undefined;
@@ -202,6 +202,11 @@ type MediaFiber = {
     return?: MediaFiber | null;
 };
 
+function withDiscordProxy(url: string, candidates: string[]): MediaUrls {
+    const proxied = isDiscordMediaUrl(url) ? undefined : candidates.find(isDiscordMediaUrl);
+    return proxied ? { url, discordProxyUrl: toOriginalMediaUrl(proxied) } : { url };
+}
+
 function getEmbedVideo(target: Element): EmbedVideo | null {
     // Unplayed embeds expose only their poster in the DOM.
     const key = Object.keys(target).find(key => key.startsWith("__reactFiber$"));
@@ -235,9 +240,7 @@ export function getMediaUrls(props: MediaProps): MediaUrls | null {
             const videoType = typeof video.contentType === "string" && video.contentType.toLowerCase().startsWith("video/");
             if (!proxy && !videoUrl && !videoType) return null;
 
-            const url = toOriginalMediaUrl(relayed ?? original);
-            const discordProxyUrl = urls.find(isDiscordMediaUrl);
-            return discordProxyUrl && !isDiscordMediaUrl(url) ? { url, discordProxyUrl: toOriginalMediaUrl(discordProxyUrl) } : { url };
+            return withDiscordProxy(toOriginalMediaUrl(relayed ?? original), urls);
         }
 
         const imageLink = target.closest<HTMLAnchorElement>('a[data-role="img"]');
@@ -255,11 +258,7 @@ export function getMediaUrls(props: MediaProps): MediaUrls | null {
 
     if (!candidates.length) return null;
 
-    const url = toOriginalMediaUrl(candidates[0]);
-    if (isDiscordMediaUrl(url)) return { url };
-
-    const proxied = candidates.find(isDiscordMediaUrl);
-    return proxied ? { url, discordProxyUrl: toOriginalMediaUrl(proxied) } : { url };
+    return withDiscordProxy(toOriginalMediaUrl(candidates[0]), candidates);
 }
 
 export function mediaUnavailableReason(props: MediaProps): string | null {

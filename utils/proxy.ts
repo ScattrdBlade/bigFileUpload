@@ -13,8 +13,6 @@ import { CORS_PROXY, describeProxy, findProxyPreset, isGenericWebdav, isPresetPr
 import { getMimeFromExtension, getUrlExtension } from "./media";
 import { isProxyReachableHost } from "./shared";
 
-export { needsOriginConfirmation } from "../types";
-
 const synced = () => Settings.plugins.BigFileUpload;
 
 const DUE_KEY = "BigFileUpload_corsPromptDue";
@@ -549,9 +547,7 @@ export function loadHttpOrigins(): Promise<void> {
     return loading ??= Promise.resolve().then(async () => {
         const revision = httpRevision;
         try {
-            const stored = await DataStore.get<unknown>(KEY);
-            const origins = Array.isArray(stored) ? stored.filter((o): o is string => typeof o === "string") : [];
-            cache = new Set([...origins, ...(cache ?? [])]);
+            cache = new Set([...asOrigins(await DataStore.get<unknown>(KEY)), ...(cache ?? [])]);
         } catch (error) {
             logger.warn("Couldn't read the http origins used on this device", error);
             cache ??= new Set();
@@ -690,7 +686,7 @@ interface EmbedSettings {
 
 const syncedEmbedProxy = () => Settings.plugins.BigFileUpload as EmbedSettings;
 
-const Native = IS_WEB
+export const Native = IS_WEB
     ? null
     : (VencordNative.pluginHelpers.BigFileUpload as PluginNative<typeof import("../native")> | undefined) ?? null;
 
@@ -734,7 +730,7 @@ export function getEmbedProxyService(): EmbedService {
 
 export const strictPending = () => peekDeviceState().freshPending;
 
-export function customProxyOptedIn(active = getActiveCorsProxyUrl()): boolean {
+export function customProxyOptedIn(active: string): boolean {
     const s = syncedEmbedProxy();
     const key = proxyKey(active);
     return Boolean(s.embedUseCustomProxy) && key != null && s.embedCustomProxyFor === key && !isPresetProxy(active) && isPublicProxyUrl(active);
@@ -746,16 +742,16 @@ export function corsProxyWrapsVideo(): boolean {
     return isPresetProxy(active) || customProxyOptedIn(active);
 }
 
+function corsEmbedTarget(): EmbedTarget | null {
+    const active = getActiveCorsProxyUrl();
+    return corsProxyWrapsVideo() ? { kind: "cors", proxy: isPresetProxy(active) ? findProxyPreset(active)!.url : active } : null;
+}
+
 export function embedTarget(): EmbedTarget | null {
     const service = getEmbedProxyService();
     if (strictPending()) return null;
     if (service !== "cors") return { kind: service };
-    const active = getActiveCorsProxyUrl();
-    if (proxyAllowedHere()) {
-        if (isPresetProxy(active)) return { kind: "cors", proxy: findProxyPreset(active)!.url };
-        if (customProxyOptedIn(active)) return { kind: "cors", proxy: active };
-    }
-    return { kind: "autocompressor" };
+    return corsEmbedTarget() ?? { kind: "autocompressor" };
 }
 
 const targetKey = (t: EmbedTarget) => t.kind === "cors" ? `cors:${proxyKey(t.proxy)}` : t.kind;
@@ -790,7 +786,7 @@ export function isVideoLink(url: string, contentType?: string): boolean {
 function wrappableLink(url: string, service: ServiceType, contentType?: string): boolean {
     if (service === ServiceType.ENCRYPTINGHOST || /[?#]/.test(url) || !URL.canParse(url)) return false;
     const u = new URL(url);
-    if (u.username || u.password || u.search || u.hash) return false;
+    if (u.username || u.password) return false;
     if (service === ServiceType.S3 && !syncedEmbedProxy().s3PublicUrl?.trim()) return false;
     if (service === ServiceType.WEBDAV && !isGenericWebdav(syncedEmbedProxy().webdavServerType, syncedEmbedProxy().webdavUrl)) return false;
     if (!getUrlExtension(url) && SERVICES[service]?.directMedia !== true && service !== ServiceType.S3) return false;
@@ -837,11 +833,11 @@ export async function wrapForEmbed(url: string, ctx: EmbedContext, wait?: EmbedW
     if (s.embedSkipNative !== false && isNativelyEmbeddable(url, ctx.service, ctx.size)) return url;
     const target = embedTarget();
     if (!target) return url;
-    const health = await embedServiceHealthy(target, LINK_WAIT_MS, wait);
+    const health = await embedServiceHealthy(target, wait);
     if (health === "up") return wrapUrl(target, url, target.kind === "autocompressor" ? await ctx.dims : undefined) ?? url;
     if (health !== "down") return url;
     for (const alt of embedFallbacks(target)) {
-        if (await embedServiceHealthy(alt, LINK_WAIT_MS, wait) !== "up") continue;
+        if (await embedServiceHealthy(alt, wait) !== "up") continue;
         const wrapped = wrapUrl(alt, url, alt.kind === "autocompressor" ? await ctx.dims : undefined);
         if (!wrapped) continue;
         noteEmbedFallback(target, alt);
@@ -852,9 +848,7 @@ export async function wrapForEmbed(url: string, ctx: EmbedContext, wait?: EmbedW
 }
 
 export function embedFallbacks(primary: EmbedTarget): EmbedTarget[] {
-    const active = getActiveCorsProxyUrl();
-    const cors: EmbedTarget | null = corsProxyWrapsVideo() ? { kind: "cors", proxy: isPresetProxy(active) ? findProxyPreset(active)!.url : active } : null;
-    const all: (EmbedTarget | null)[] = [cors, { kind: "autocompressor" }, { kind: "x266" }];
+    const all: (EmbedTarget | null)[] = [corsEmbedTarget(), { kind: "autocompressor" }, { kind: "x266" }];
     return all.filter((t): t is EmbedTarget => t != null && targetKey(t) !== targetKey(primary));
 }
 
@@ -870,7 +864,8 @@ export interface EmbedPrediction {
 export async function predictEmbedTarget(p: EmbedPrediction): Promise<EmbedTarget | null> {
     const s = syncedEmbedProxy();
     if (!s.embedProxyEnabled || !p.outputsCanEmbed) return null;
-    if (!isVideoLink(`https://link.invalid/${encodeURIComponent(p.fileName)}`, p.contentType)) return null;
+    const link = `https://link.invalid/${encodeURIComponent(p.fileName)}`;
+    if (!isVideoLink(link, p.contentType)) return null;
     const info = SERVICES[p.service];
     if (!info || info.directMedia === false || p.service === ServiceType.ENCRYPTINGHOST) return null;
     if (p.service === ServiceType.S3 && !s.s3PublicUrl?.trim()) return null;
@@ -879,7 +874,7 @@ export async function predictEmbedTarget(p: EmbedPrediction): Promise<EmbedTarge
         const endpoint = p.service === ServiceType.S3 ? s.s3PublicUrl : p.endpoint;
         if (!endpoint || !await privateLinkReachable(endpoint.trim())) return null;
     }
-    if (s.embedSkipNative !== false && isNativelyEmbeddable(`https://link.invalid/${encodeURIComponent(p.fileName)}`, p.service, p.size)) return null;
+    if (s.embedSkipNative !== false && isNativelyEmbeddable(link, p.service, p.size)) return null;
     return embedTarget();
 }
 
@@ -937,13 +932,13 @@ export function probeEmbedTarget(target: EmbedTarget, force = false): Promise<Pr
     return probe;
 }
 
-export async function embedServiceHealthy(target: EmbedTarget, waitMs: number, wait?: EmbedWait): Promise<Health> {
+export async function embedServiceHealthy(target: EmbedTarget, wait?: EmbedWait): Promise<Health> {
     const cached = freshResult(targetKey(target));
     if (cached) return cached.health;
     const probe = probeEmbedTarget(target);
     const shown = setTimeout(() => wait?.onWait?.(embedTargetName(target)), WAIT_NOTICE_MS);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const late = new Promise<"pending">(resolve => { timer = setTimeout(() => resolve("pending"), waitMs); });
+    const late = new Promise<"pending">(resolve => { timer = setTimeout(() => resolve("pending"), LINK_WAIT_MS); });
     try {
         return await Promise.race([probe, late, ...wait?.stop ? [wait.stop.then(() => "pending" as const)] : []]);
     } finally {

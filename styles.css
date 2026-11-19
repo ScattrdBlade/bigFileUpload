@@ -218,10 +218,6 @@
     background: var(--background-mod-subtle);
 }
 
-.vc-file-upload-settings-fallback-order-label {
-    color: var(--text-default);
-}
-
 .vc-file-upload-settings-fallback-order-handle {
     color: var(--text-muted);
     font-size: 12px;

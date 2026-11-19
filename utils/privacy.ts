@@ -8,8 +8,8 @@ import * as DataStore from "@api/DataStore";
 import { React } from "@webpack/common";
 
 import { settings } from "../settings";
-import { CredentialValues, isFilled, logger, readShareXConfig, serviceLabel, SERVICES, ServiceType, shareXSecretParts } from "../types";
-import { isCredentialQueryKey, randomHexBytes } from "./shared";
+import { CredentialValues, isFilled, logger, readShareXConfig, serviceLabel, SERVICES, ServiceType, shareXSecretParts, toBase64 } from "../types";
+import { decodeUrlSegment, isCredentialQueryKey, randomHexBytes } from "./shared";
 
 const REDACTED = "[redacted]";
 
@@ -26,13 +26,7 @@ const MIN_SECRET_LENGTH = 6;
 
 const PLAIN_HEADERS = new Set(["accept", "content-type", "user-agent", "x-requested-with", "origin", "referer"]);
 
-function basicToken(user: string, pass: string): string | undefined {
-    try {
-        return btoa(String.fromCharCode(...new TextEncoder().encode(`${user}:${pass}`)));
-    } catch {
-        return undefined;
-    }
-}
+const basicToken = (user: string, pass: string) => toBase64(`${user}:${pass}`);
 
 export function configuredSecrets(values: CredentialValues): string[] {
     const found: string[] = [];
@@ -42,13 +36,7 @@ export function configuredSecrets(values: CredentialValues): string[] {
     const addUrlLogin = (raw: unknown) => {
         if (!isFilled(raw) || !URL.canParse(raw.trim())) return;
         const { username, password } = new URL(raw.trim());
-        const decoded = [username, password].map(part => {
-            try {
-                return decodeURIComponent(part);
-            } catch {
-                return part;
-            }
-        });
+        const decoded = [username, password].map(decodeUrlSegment);
         for (const part of [username, password, ...decoded]) add(part);
         if (username || password) add(basicToken(decoded[0], decoded[1]));
     };

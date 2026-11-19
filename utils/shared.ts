@@ -23,18 +23,16 @@ export class UploadAbortError extends Error {
     }
 }
 
-const PRE_HANDSHAKE_CODES: ReadonlySet<string> = new Set([
-    "ENOTFOUND", "EAI_AGAIN", "EAI_FAIL", "EAI_NONAME", "EAI_NODATA", "ENODATA", "ESERVFAIL", "EREFUSED",
-    "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "EADDRNOTAVAIL"
-]);
+const DNS_CODES: ReadonlySet<string> = new Set(["ENOTFOUND", "EAI_AGAIN", "EAI_FAIL", "EAI_NONAME", "EAI_NODATA", "ENODATA", "ESERVFAIL", "EREFUSED"]);
 
-const NOT_TRANSIENT_CODES: ReadonlySet<string> = new Set([
-    "CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID", "CRL_HAS_EXPIRED", "CERT_REVOKED",
-    "UND_ERR_INVALID_ARG", "UND_ERR_REQ_CONTENT_LENGTH_MISMATCH", "ERR_INVALID_ARG_TYPE", "ERR_INVALID_CHAR", "ERR_INVALID_URL"
-]);
+const PRE_HANDSHAKE_CODES: ReadonlySet<string> = new Set([...DNS_CODES, "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "EADDRNOTAVAIL"]);
+
+const HOST_TLS_CODES: ReadonlySet<string> = new Set(["CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID", "CRL_HAS_EXPIRED", "CERT_REVOKED"]);
+
+const LOCAL_CODES: ReadonlySet<string> = new Set(["UND_ERR_INVALID_ARG", "UND_ERR_REQ_CONTENT_LENGTH_MISMATCH", "ERR_INVALID_ARG_TYPE", "ERR_INVALID_CHAR", "ERR_INVALID_URL"]);
 
 export function failedBeforeSending(f: UploadFailure): boolean {
-    if (!f.code || NOT_TRANSIENT_CODES.has(f.code)) return false;
+    if (!f.code || HOST_TLS_CODES.has(f.code) || LOCAL_CODES.has(f.code)) return false;
     return f.stage === "connect" && (f.stageReliable || PRE_HANDSHAKE_CODES.has(f.code));
 }
 
@@ -56,11 +54,7 @@ export function firstErrorCode(error: unknown): string | undefined {
     return undefined;
 }
 
-const DNS_CODES: ReadonlySet<string> = new Set(["ENOTFOUND", "EAI_AGAIN", "EAI_FAIL", "EAI_NONAME", "EAI_NODATA", "ENODATA", "ESERVFAIL", "EREFUSED"]);
-
 const CLOSED_CODES: ReadonlySet<string> = new Set(["ECONNRESET", "EPIPE", "ECONNABORTED", "UND_ERR_SOCKET"]);
-
-const EXPIRED_CERT_CODES: ReadonlySet<string> = new Set(["CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID", "CRL_HAS_EXPIRED"]);
 
 const isTlsCode = (code: string) => /^(?:ERR_TLS_|ERR_SSL_|ERR_OSSL_|CERT_|UNABLE_TO_|CRL_)/.test(code)
     || ["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "HOSTNAME_MISMATCH", "EPROTO"].includes(code);
@@ -103,7 +97,7 @@ function networkHint(code: string | undefined, stage: UploadFailure["stage"] | u
     if (code === "ETIMEDOUT" || code === "UND_ERR_CONNECT_TIMEOUT") return "Couldn't connect to the host in time";
     if (code === "UND_ERR_HEADERS_TIMEOUT" || code === "UND_ERR_BODY_TIMEOUT") return "The host stopped answering";
     if (code === "EHOSTUNREACH" || code === "ENETUNREACH" || code === "ENETDOWN" || code === "EADDRNOTAVAIL") return "The host's network is unreachable from here";
-    if (EXPIRED_CERT_CODES.has(code) || code === "CERT_REVOKED") return "The host's certificate is expired, revoked or not valid yet";
+    if (HOST_TLS_CODES.has(code)) return "The host's certificate is expired, revoked or not valid yet";
     if (code === "EPROTO" || code.startsWith("ERR_SSL_")) return "The secure connection failed (something other than the host may be answering)";
     if (isTlsCode(code)) return "The host's certificate isn't trusted (a proxy, antivirus or network filter may be intercepting HTTPS)";
     return null;
@@ -111,18 +105,14 @@ function networkHint(code: string | undefined, stage: UploadFailure["stage"] | u
 
 export const isDnsCode = (code: string | undefined) => code !== undefined && DNS_CODES.has(code);
 
-const BLOCKED_CODES: ReadonlySet<string> = new Set([...DNS_CODES, "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "EADDRNOTAVAIL"].filter(c => c !== "EAI_AGAIN"));
+const BLOCKED_CODES: ReadonlySet<string> = new Set([...PRE_HANDSHAKE_CODES].filter(c => c !== "EAI_AGAIN"));
 
 const INTERCEPTION_CERT_CODES: ReadonlySet<string> = new Set([
     "ERR_TLS_CERT_ALTNAME_INVALID", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
     "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "CERT_UNTRUSTED", "CERT_SIGNATURE_FAILURE", "CERT_REJECTED", "HOSTNAME_MISMATCH"
 ]);
 
-const UNREACHABLE_CODES: ReadonlySet<string> = new Set(["EAI_AGAIN", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "ECONNRESET", "UND_ERR_SOCKET", "ECONNABORTED", "EPIPE", "ENETDOWN"]);
-
-const HOST_TLS_CODES: ReadonlySet<string> = new Set(["CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID", "CRL_HAS_EXPIRED", "CERT_REVOKED"]);
-
-const LOCAL_CODES: ReadonlySet<string> = new Set(["UND_ERR_INVALID_ARG", "UND_ERR_REQ_CONTENT_LENGTH_MISMATCH", "ERR_INVALID_ARG_TYPE", "ERR_INVALID_CHAR", "ERR_INVALID_URL"]);
+const UNREACHABLE_CODES: ReadonlySet<string> = new Set([...CLOSED_CODES, "EAI_AGAIN", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "ENETDOWN"]);
 
 export function classifyFetchError(error: unknown, stage: UploadFailure["stage"], stageReliable: boolean, abort?: UploadAbortError["reason"]): FailureKind {
     if (abort === "user") return "cancelled";
@@ -194,7 +184,7 @@ export function isBuiltInOrigin(url: string): boolean {
 }
 
 export function isDiscordMediaHost(hostname: string): boolean {
-    const host = hostname.toLowerCase().replace(/\.$/, "");
+    const host = bareHost(hostname);
     return ["discord.com", "discordapp.com", "discordapp.net"].some(d => host === d || host.endsWith("." + d));
 }
 
@@ -223,7 +213,7 @@ function ipv6Groups(host: string): number[] | null {
     const head = parse(halves[0]), tail = halves.length === 2 ? parse(halves[1]) : [];
     const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
     const groups = [...head, ...Array(Math.max(0, fill)).fill(0), ...tail];
-    return groups.length === 8 && groups.every(g => Number.isInteger(g)) && fill >= 0 ? groups : null;
+    return groups.length === 8 && groups.every(g => Number.isInteger(g)) ? groups : null;
 }
 
 export function isPrivateAddress(address: string): boolean {
@@ -253,7 +243,7 @@ export function isPublicSourceAddress(address: string): boolean {
 const LAN_NAME_SUFFIXES = ["localhost", "local", "lan", "home.arpa", "internal"];
 
 export function httpHostKind(hostname: string): "private" | "lan-name" | "public" {
-    const host = hostname.toLowerCase().replace(/\.$/, "");
+    const host = bareHost(hostname);
     if (host.startsWith("[") || ipv4Octets(host)) return isPrivateAddress(host) ? "private" : "public";
     if (!host.includes(".")) return host ? "lan-name" : "public";
     return LAN_NAME_SUFFIXES.some(s => host === s || host.endsWith("." + s)) ? "lan-name" : "public";
@@ -264,10 +254,10 @@ export function httpLanOnlyText(host: string, resolvedPublic: boolean, optIn = t
     return `http is only allowed for LAN hosts (${why})${optIn ? ". \"Allow Insecure HTTP\" in the host's settings allows it on this device" : ""}`;
 }
 
-const LOCAL_SUFFIXES = ["localhost", "local", "lan", "home.arpa", "internal", "ts.net", "nip.io", "sslip.io", "localtest.me"];
+const LOCAL_SUFFIXES = [...LAN_NAME_SUFFIXES, "ts.net", "nip.io", "sslip.io", "localtest.me"];
 
 export function isProxyReachableHost(hostname: string): boolean {
-    const host = hostname.toLowerCase().replace(/\.$/, "");
+    const host = bareHost(hostname);
     if (host.startsWith("[") || ipv4Octets(host)) return !isPrivateAddress(host);
     if (!host.includes(".")) return false;
     return !LOCAL_SUFFIXES.some(s => host === s || host.endsWith("." + s));
@@ -284,8 +274,7 @@ export function isCredentialQueryKey(key: string): boolean {
 }
 
 export function hasSecretQuery(u: URL): boolean {
-    for (const key of u.searchParams.keys()) if (isCredentialQueryKey(key)) return true;
-    return false;
+    return [...u.searchParams.keys()].some(isCredentialQueryKey);
 }
 
 export function proxySourceAllowed(u: URL): boolean {
@@ -333,6 +322,14 @@ export type RequestBody = UploadBody | SpoolPart;
 export const isSpooled = (body: RequestBody): body is SpooledFile => !(body instanceof Blob) && body.kind === "spool";
 
 export const isSpoolPart = (body: RequestBody): body is SpoolPart => !(body instanceof Blob) && body.kind === "spool-part";
+
+export function decodeUrlSegment(segment: string): string {
+    try {
+        return decodeURIComponent(segment);
+    } catch {
+        return segment;
+    }
+}
 
 export function bytesToHex(bytes: Uint8Array): string {
     return Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
